@@ -1,0 +1,25 @@
+opencost:
+  prometheus:
+    internal:
+      enabled: true
+      serviceName: kubepilot-monitoring-kube-prometheus
+      namespaceName: monitoring
+      port: 9090
+
+    external:
+      enabled: false
+
+  ui:
+    enabled: true
+
+  exporter:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        cpu: 300m
+        memory: 512Mi
+
+service:
+  type: ClusterIP
