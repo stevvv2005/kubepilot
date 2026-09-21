@@ -1,0 +1,97 @@
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
+
+from agent.sre_agent.diagnostic import Diagnosis
+from agent.sre_agent.analyzer import PodAnalysis
+from agent.webhook.app import app
+
+
+client = TestClient(app)
+
+
+def test_health():
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_alert_without_required_labels_is_rejected():
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "KubePilotPodIncident",
+                    "namespace": "default",
+                },
+                "annotations": {},
+            }
+        ],
+    }
+
+    response = client.post("/alerts", json=payload)
+
+    assert response.status_code == 400
+    assert "namespace, pod, and container" in response.json()["detail"]
+
+
+@patch("agent.webhook.app.analyze_pod")
+def test_alert_triggers_sre_analysis(mock_analyze_pod):
+    mock_analyze_pod.return_value = PodAnalysis(
+        namespace="default",
+        pod_name="frontend-test",
+        container_name="server",
+        diagnosis=Diagnosis(
+            incident_type="Healthy",
+            root_cause="No active Kubernetes incident was detected.",
+            recommendation="No corrective action is required.",
+            confidence="high",
+        ),
+        memory_mib=18.5,
+        cpu_millicores=30.2,
+    )
+
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "KubePilotPodIncident",
+                    "namespace": "default",
+                    "pod": "frontend-test",
+                    "container": "server",
+                    "severity": "warning",
+                },
+                "annotations": {
+                    "summary": "Webhook test",
+                },
+            }
+        ],
+    }
+
+    response = client.post("/alerts", json=payload)
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["received"] == 1
+    assert body["namespace"] == "default"
+    assert body["pod"] == "frontend-test"
+    assert body["container"] == "server"
+
+    assert body["diagnosis"]["incident_type"] == "Healthy"
+    assert body["diagnosis"]["confidence"] == "high"
+
+    assert body["metrics"]["memory_mib"] == 18.5
+    assert body["metrics"]["cpu_millicores"] == 30.2
+
+    mock_analyze_pod.assert_called_once_with(
+        namespace="default",
+        pod_name="frontend-test",
+        container_name="server",
+    )
