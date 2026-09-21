@@ -4,12 +4,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from agent.sre_agent.analyzer import analyze_pod
+from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.remediation import build_remediation_proposal
 
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 
@@ -59,6 +60,10 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
         analysis.diagnosis,
     )
 
+    git_change = build_git_change_proposal(
+        remediation,
+    )
+
     return {
         "received": len(payload.alerts),
         "status": first_alert.status,
@@ -84,5 +89,13 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "target_file": remediation.target_file,
             "requires_human_approval": remediation.requires_human_approval,
             "direct_cluster_write": remediation.direct_cluster_write,
+        },
+        "git_change": {
+            "incident_type": git_change.incident_type,
+            "target_file": git_change.target_file,
+            "change_type": git_change.change_type,
+            "description": git_change.description,
+            "requires_human_approval": git_change.requires_human_approval,
+            "apply_directly": git_change.apply_directly,
         },
     }
