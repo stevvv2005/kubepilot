@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kubepilot-imagepullbackoff
+  namespace: default
+  labels:
+    app: kubepilot-imagepullbackoff
+spec:
+  restartPolicy: Never
+  containers:
+    - name: broken-container
+      image: ghcr.io/kubepilot/this-image-does-not-exist:never
