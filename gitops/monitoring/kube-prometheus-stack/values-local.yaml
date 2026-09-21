@@ -1,7 +1,6 @@
 grafana:
   enabled: true
   defaultDashboardsEnabled: true
-  
 
   service:
     type: ClusterIP
@@ -23,6 +22,22 @@ prometheus:
 
 alertmanager:
   enabled: true
+
+  config:
+    route:
+      receiver: default
+      routes:
+        - receiver: kubepilot-sre
+          matchers:
+            - alertname="KubePilotPodIncident"
+
+    receivers:
+      - name: default
+
+      - name: kubepilot-sre
+        webhook_configs:
+          - url: http://host.docker.internal:8081/alerts
+            send_resolved: true
 
   alertmanagerSpec:
     resources:

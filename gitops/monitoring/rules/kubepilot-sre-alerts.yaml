@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kubepilot-sre-alerts
+  namespace: monitoring
+  labels:
+    release: kubepilot-monitoring
+spec:
+  groups:
+    - name: kubepilot.sre
+      rules:
+        - alert: KubePilotPodIncident
+          expr: |
+            max by (namespace, pod, container) (
+              max_over_time(
+                kube_pod_container_status_waiting_reason{
+                  namespace="default",
+                  reason=~"ErrImagePull|ImagePullBackOff"
+                }[1m]
+              )
+            ) == 1
+          for: 15s
+          labels:
+            severity: warning
+          annotations:
+            summary: "Kubernetes container cannot pull its image"
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} has an image pull failure."
