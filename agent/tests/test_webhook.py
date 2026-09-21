@@ -80,15 +80,33 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
     body = response.json()
 
     assert body["received"] == 1
+    assert body["status"] == "firing"
+    assert body["alertname"] == "KubePilotPodIncident"
     assert body["namespace"] == "default"
     assert body["pod"] == "frontend-test"
     assert body["container"] == "server"
+    assert body["severity"] == "warning"
 
     assert body["diagnosis"]["incident_type"] == "Healthy"
+    assert body["diagnosis"]["root_cause"] == (
+        "No active Kubernetes incident was detected."
+    )
+    assert body["diagnosis"]["recommendation"] == (
+        "No corrective action is required."
+    )
     assert body["diagnosis"]["confidence"] == "high"
 
     assert body["metrics"]["memory_mib"] == 18.5
     assert body["metrics"]["cpu_millicores"] == 30.2
+
+    assert body["remediation"]["incident_type"] == "Healthy"
+    assert body["remediation"]["summary"] == "No remediation required."
+    assert body["remediation"]["proposed_change"] == (
+        "No Git change is required."
+    )
+    assert body["remediation"]["target_file"] is None
+    assert body["remediation"]["requires_human_approval"] is True
+    assert body["remediation"]["direct_cluster_write"] is False
 
     mock_analyze_pod.assert_called_once_with(
         namespace="default",

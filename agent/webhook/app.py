@@ -1,13 +1,15 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
 from typing import Dict, List
 
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
 from agent.sre_agent.analyzer import analyze_pod
+from agent.sre_agent.remediation import build_remediation_proposal
 
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -53,6 +55,10 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
         container_name=container,
     )
 
+    remediation = build_remediation_proposal(
+        analysis.diagnosis,
+    )
+
     return {
         "received": len(payload.alerts),
         "status": first_alert.status,
@@ -70,5 +76,13 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
         "metrics": {
             "memory_mib": analysis.memory_mib,
             "cpu_millicores": analysis.cpu_millicores,
+        },
+        "remediation": {
+            "incident_type": remediation.incident_type,
+            "summary": remediation.summary,
+            "proposed_change": remediation.proposed_change,
+            "target_file": remediation.target_file,
+            "requires_human_approval": remediation.requires_human_approval,
+            "direct_cluster_write": remediation.direct_cluster_write,
         },
     }
