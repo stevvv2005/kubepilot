@@ -2,8 +2,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from agent.sre_agent.diagnostic import Diagnosis
 from agent.sre_agent.analyzer import PodAnalysis
+from agent.sre_agent.diagnostic import Diagnosis
 from agent.webhook.app import app
 
 
@@ -107,6 +107,15 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
     assert body["remediation"]["target_file"] is None
     assert body["remediation"]["requires_human_approval"] is True
     assert body["remediation"]["direct_cluster_write"] is False
+
+    assert body["git_change"]["incident_type"] == "Healthy"
+    assert body["git_change"]["target_file"] is None
+    assert body["git_change"]["change_type"] == "none"
+    assert body["git_change"]["description"] == (
+        "No Git change is required."
+    )
+    assert body["git_change"]["requires_human_approval"] is True
+    assert body["git_change"]["apply_directly"] is False
 
     mock_analyze_pod.assert_called_once_with(
         namespace="default",
