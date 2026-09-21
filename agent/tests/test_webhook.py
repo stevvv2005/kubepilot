@@ -117,6 +117,14 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
     assert body["git_change"]["requires_human_approval"] is True
     assert body["git_change"]["apply_directly"] is False
 
+    assert body["manifest_diff"]["incident_type"] == "Healthy"
+    assert body["manifest_diff"]["target_file"] is None
+    assert body["manifest_diff"]["change_type"] == "none"
+    assert body["manifest_diff"]["before"] is None
+    assert body["manifest_diff"]["after"] is None
+    assert body["manifest_diff"]["requires_human_approval"] is True
+    assert body["manifest_diff"]["writes_file"] is False
+
     mock_analyze_pod.assert_called_once_with(
         namespace="default",
         pod_name="frontend-test",
