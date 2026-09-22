@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from agent.sre_agent.analyzer import analyze_pod
 from agent.sre_agent.candidate_value import suggest_candidate_value
 from agent.sre_agent.git_change import build_git_change_proposal
+from agent.sre_agent.github_pr import validate_pr_payload_for_github
 from agent.sre_agent.manifest_diff import build_manifest_diff_proposal
 from agent.sre_agent.patch_proposal import build_patch_proposal
 from agent.sre_agent.pr_payload import build_pr_payload
@@ -15,7 +16,7 @@ from agent.sre_agent.reviewed_patch import build_reviewed_patch_payload
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="0.9.0",
+    version="1.0.0",
 )
 
 
@@ -92,6 +93,10 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
 
     pr_payload = build_pr_payload(
         reviewed_patch=reviewed_patch,
+    )
+
+    github_pr_gateway = validate_pr_payload_for_github(
+        payload=pr_payload,
     )
 
     return {
@@ -199,5 +204,11 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "ready_to_create": pr_payload.ready_to_create,
             "writes_git": pr_payload.writes_git,
             "creates_pr": pr_payload.creates_pr,
+        },
+        "github_pr_gateway": {
+            "allowed": github_pr_gateway.allowed,
+            "reason": github_pr_gateway.reason,
+            "ready_to_send": github_pr_gateway.ready_to_send,
+            "performs_write": github_pr_gateway.performs_write,
         },
     }

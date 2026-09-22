@@ -184,6 +184,11 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
         body["pr_payload"]["pr_body"]
     )
 
+    assert body["github_pr_gateway"]["allowed"] is False
+    assert body["github_pr_gateway"]["ready_to_send"] is False
+    assert body["github_pr_gateway"]["performs_write"] is False
+    assert "not approved" in body["github_pr_gateway"]["reason"]
+
     mock_analyze_pod.assert_called_once_with(
         namespace="default",
         pod_name="frontend-test",
