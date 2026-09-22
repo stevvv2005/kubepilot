@@ -162,6 +162,28 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
     assert body["reviewed_patch"]["writes_file"] is False
     assert body["reviewed_patch"]["auto_apply"] is False
 
+    assert body["pr_payload"]["incident_type"] == "Healthy"
+    assert body["pr_payload"]["title"] == (
+        "fix(sre): review Healthy remediation"
+    )
+    assert body["pr_payload"]["branch_name"] == (
+        "fix/sre-healthy-pending"
+    )
+    assert body["pr_payload"]["target_file"] is None
+    assert body["pr_payload"]["container_name"] is None
+    assert body["pr_payload"]["field"] == "none"
+    assert body["pr_payload"]["current_value"] is None
+    assert body["pr_payload"]["approved_value"] is None
+    assert body["pr_payload"]["commit_message"] == (
+        "fix(sre): review Healthy remediation"
+    )
+    assert body["pr_payload"]["ready_to_create"] is False
+    assert body["pr_payload"]["writes_git"] is False
+    assert body["pr_payload"]["creates_pr"] is False
+    assert "Human approval is still required" in (
+        body["pr_payload"]["pr_body"]
+    )
+
     mock_analyze_pod.assert_called_once_with(
         namespace="default",
         pod_name="frontend-test",

@@ -8,13 +8,14 @@ from agent.sre_agent.candidate_value import suggest_candidate_value
 from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.manifest_diff import build_manifest_diff_proposal
 from agent.sre_agent.patch_proposal import build_patch_proposal
+from agent.sre_agent.pr_payload import build_pr_payload
 from agent.sre_agent.remediation import build_remediation_proposal
 from agent.sre_agent.reviewed_patch import build_reviewed_patch_payload
 
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="0.8.0",
+    version="0.9.0",
 )
 
 
@@ -87,6 +88,10 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
     reviewed_patch = build_reviewed_patch_payload(
         patch_proposal=patch_proposal,
         candidate_value=candidate_value,
+    )
+
+    pr_payload = build_pr_payload(
+        reviewed_patch=reviewed_patch,
     )
 
     return {
@@ -179,5 +184,20 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "ready_for_pr": reviewed_patch.ready_for_pr,
             "writes_file": reviewed_patch.writes_file,
             "auto_apply": reviewed_patch.auto_apply,
+        },
+        "pr_payload": {
+            "incident_type": pr_payload.incident_type,
+            "title": pr_payload.title,
+            "branch_name": pr_payload.branch_name,
+            "target_file": pr_payload.target_file,
+            "container_name": pr_payload.container_name,
+            "field": pr_payload.field,
+            "current_value": pr_payload.current_value,
+            "approved_value": pr_payload.approved_value,
+            "commit_message": pr_payload.commit_message,
+            "pr_body": pr_payload.pr_body,
+            "ready_to_create": pr_payload.ready_to_create,
+            "writes_git": pr_payload.writes_git,
+            "creates_pr": pr_payload.creates_pr,
         },
     }
