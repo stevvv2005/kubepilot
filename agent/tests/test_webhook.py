@@ -135,6 +135,17 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
     assert body["patch_proposal"]["requires_human_approval"] is True
     assert body["patch_proposal"]["writes_file"] is False
 
+    assert body["candidate_value"]["incident_type"] == "Healthy"
+    assert body["candidate_value"]["field"] == "none"
+    assert body["candidate_value"]["current_value"] is None
+    assert body["candidate_value"]["candidate_value"] is None
+    assert body["candidate_value"]["reason"] == (
+        "No candidate value is required."
+    )
+    assert body["candidate_value"]["confidence"] == "high"
+    assert body["candidate_value"]["requires_human_approval"] is True
+    assert body["candidate_value"]["auto_apply"] is False
+
     mock_analyze_pod.assert_called_once_with(
         namespace="default",
         pod_name="frontend-test",
