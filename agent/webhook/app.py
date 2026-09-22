@@ -6,12 +6,13 @@ from pydantic import BaseModel, Field
 from agent.sre_agent.analyzer import analyze_pod
 from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.manifest_diff import build_manifest_diff_proposal
+from agent.sre_agent.patch_proposal import build_patch_proposal
 from agent.sre_agent.remediation import build_remediation_proposal
 
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="0.5.0",
+    version="0.6.0",
 )
 
 
@@ -66,7 +67,13 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
     )
 
     manifest_diff = build_manifest_diff_proposal(
-        git_change,
+        git_change=git_change,
+        container_name=container,
+    )
+
+    patch_proposal = build_patch_proposal(
+        manifest_diff=manifest_diff,
+        container_name=container,
     )
 
     return {
@@ -92,7 +99,9 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "summary": remediation.summary,
             "proposed_change": remediation.proposed_change,
             "target_file": remediation.target_file,
-            "requires_human_approval": remediation.requires_human_approval,
+            "requires_human_approval": (
+                remediation.requires_human_approval
+            ),
             "direct_cluster_write": remediation.direct_cluster_write,
         },
         "git_change": {
@@ -100,7 +109,9 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "target_file": git_change.target_file,
             "change_type": git_change.change_type,
             "description": git_change.description,
-            "requires_human_approval": git_change.requires_human_approval,
+            "requires_human_approval": (
+                git_change.requires_human_approval
+            ),
             "apply_directly": git_change.apply_directly,
         },
         "manifest_diff": {
@@ -113,5 +124,18 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
                 manifest_diff.requires_human_approval
             ),
             "writes_file": manifest_diff.writes_file,
+        },
+        "patch_proposal": {
+            "incident_type": patch_proposal.incident_type,
+            "target_file": patch_proposal.target_file,
+            "container_name": patch_proposal.container_name,
+            "field": patch_proposal.field,
+            "current_value": patch_proposal.current_value,
+            "proposed_value": patch_proposal.proposed_value,
+            "reason": patch_proposal.reason,
+            "requires_human_approval": (
+                patch_proposal.requires_human_approval
+            ),
+            "writes_file": patch_proposal.writes_file,
         },
     }
