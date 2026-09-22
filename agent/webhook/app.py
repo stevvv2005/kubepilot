@@ -9,11 +9,12 @@ from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.manifest_diff import build_manifest_diff_proposal
 from agent.sre_agent.patch_proposal import build_patch_proposal
 from agent.sre_agent.remediation import build_remediation_proposal
+from agent.sre_agent.reviewed_patch import build_reviewed_patch_payload
 
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="0.7.0",
+    version="0.8.0",
 )
 
 
@@ -81,6 +82,11 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
         incident_type=patch_proposal.incident_type,
         field=patch_proposal.field,
         current_value=patch_proposal.current_value,
+    )
+
+    reviewed_patch = build_reviewed_patch_payload(
+        patch_proposal=patch_proposal,
+        candidate_value=candidate_value,
     )
 
     return {
@@ -156,5 +162,22 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
                 candidate_value.requires_human_approval
             ),
             "auto_apply": candidate_value.auto_apply,
+        },
+        "reviewed_patch": {
+            "incident_type": reviewed_patch.incident_type,
+            "target_file": reviewed_patch.target_file,
+            "container_name": reviewed_patch.container_name,
+            "field": reviewed_patch.field,
+            "current_value": reviewed_patch.current_value,
+            "candidate_value": reviewed_patch.candidate_value,
+            "approved_value": reviewed_patch.approved_value,
+            "reason": reviewed_patch.reason,
+            "confidence": reviewed_patch.confidence,
+            "requires_human_approval": (
+                reviewed_patch.requires_human_approval
+            ),
+            "ready_for_pr": reviewed_patch.ready_for_pr,
+            "writes_file": reviewed_patch.writes_file,
+            "auto_apply": reviewed_patch.auto_apply,
         },
     }
