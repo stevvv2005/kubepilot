@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from agent.sre_agent.analyzer import analyze_pod
+from agent.sre_agent.candidate_value import suggest_candidate_value
 from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.manifest_diff import build_manifest_diff_proposal
 from agent.sre_agent.patch_proposal import build_patch_proposal
@@ -12,7 +13,7 @@ from agent.sre_agent.remediation import build_remediation_proposal
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="0.6.0",
+    version="0.7.0",
 )
 
 
@@ -76,6 +77,12 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
         container_name=container,
     )
 
+    candidate_value = suggest_candidate_value(
+        incident_type=patch_proposal.incident_type,
+        field=patch_proposal.field,
+        current_value=patch_proposal.current_value,
+    )
+
     return {
         "received": len(payload.alerts),
         "status": first_alert.status,
@@ -137,5 +144,17 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
                 patch_proposal.requires_human_approval
             ),
             "writes_file": patch_proposal.writes_file,
+        },
+        "candidate_value": {
+            "incident_type": candidate_value.incident_type,
+            "field": candidate_value.field,
+            "current_value": candidate_value.current_value,
+            "candidate_value": candidate_value.candidate_value,
+            "reason": candidate_value.reason,
+            "confidence": candidate_value.confidence,
+            "requires_human_approval": (
+                candidate_value.requires_human_approval
+            ),
+            "auto_apply": candidate_value.auto_apply,
         },
     }
