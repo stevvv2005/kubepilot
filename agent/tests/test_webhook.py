@@ -188,7 +188,19 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
     assert body["github_pr_gateway"]["ready_to_send"] is False
     assert body["github_pr_gateway"]["performs_write"] is False
     assert "not approved" in body["github_pr_gateway"]["reason"]
-
+    assert body["github_pr_request"]["repository"] == "stevvv2005/kubepilot"
+    assert body["github_pr_request"]["repository"] == "stevvv2005/kubepilot"
+    assert body["github_pr_request"]["base_branch"] == "main"
+    assert body["github_pr_request"]["head_branch"] == (
+    "fix/sre-healthy-pending"
+    )
+    assert body["github_pr_request"]["title"] == (
+    "fix(sre): review Healthy remediation"
+   )
+    assert body["github_pr_request"]["target_file"] is None
+    assert body["github_pr_request"]["approved_value"] is None
+    assert body["github_pr_request"]["ready_to_send"] is False
+    assert body["github_pr_request"]["performs_write"] is False
     mock_analyze_pod.assert_called_once_with(
         namespace="default",
         pod_name="frontend-test",

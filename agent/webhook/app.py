@@ -7,6 +7,7 @@ from agent.sre_agent.analyzer import analyze_pod
 from agent.sre_agent.candidate_value import suggest_candidate_value
 from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.github_pr import validate_pr_payload_for_github
+from agent.sre_agent.github_request import build_github_pr_request
 from agent.sre_agent.manifest_diff import build_manifest_diff_proposal
 from agent.sre_agent.patch_proposal import build_patch_proposal
 from agent.sre_agent.pr_payload import build_pr_payload
@@ -16,7 +17,7 @@ from agent.sre_agent.reviewed_patch import build_reviewed_patch_payload
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 
@@ -97,6 +98,13 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
 
     github_pr_gateway = validate_pr_payload_for_github(
         payload=pr_payload,
+    )
+
+    github_pr_request = build_github_pr_request(
+        repository="stevvv2005/kubepilot",
+        base_branch="main",
+        payload=pr_payload,
+        gateway=github_pr_gateway,
     )
 
     return {
@@ -210,5 +218,16 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "reason": github_pr_gateway.reason,
             "ready_to_send": github_pr_gateway.ready_to_send,
             "performs_write": github_pr_gateway.performs_write,
+        },
+        "github_pr_request": {
+            "repository": github_pr_request.repository,
+            "base_branch": github_pr_request.base_branch,
+            "head_branch": github_pr_request.head_branch,
+            "title": github_pr_request.title,
+            "body": github_pr_request.body,
+            "target_file": github_pr_request.target_file,
+            "approved_value": github_pr_request.approved_value,
+            "ready_to_send": github_pr_request.ready_to_send,
+            "performs_write": github_pr_request.performs_write,
         },
     }
