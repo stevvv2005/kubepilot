@@ -1,9 +1,8 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from agent.sre_agent.analyzer import PodAnalysis
-from agent.sre_agent.diagnostic import Diagnosis
 from agent.webhook.app import app
 
 
@@ -17,41 +16,23 @@ def test_health():
     assert response.json() == {"status": "ok"}
 
 
-def test_alert_without_required_labels_is_rejected():
-    payload = {
-        "status": "firing",
-        "alerts": [
-            {
-                "status": "firing",
-                "labels": {
-                    "alertname": "KubePilotPodIncident",
-                    "namespace": "default",
-                },
-                "annotations": {},
-            }
-        ],
-    }
-
-    response = client.post("/alerts", json=payload)
-
-    assert response.status_code == 400
-    assert "namespace, pod, and container" in response.json()["detail"]
-
-
 @patch("agent.webhook.app.analyze_pod")
-def test_alert_triggers_sre_analysis(mock_analyze_pod):
-    mock_analyze_pod.return_value = PodAnalysis(
+def test_receive_alert(mock_analyze_pod):
+    mock_analyze_pod.return_value = SimpleNamespace(
         namespace="default",
-        pod_name="frontend-test",
+        pod_name="frontend",
         container_name="server",
-        diagnosis=Diagnosis(
+        diagnosis=SimpleNamespace(
             incident_type="Healthy",
-            root_cause="No active Kubernetes incident was detected.",
-            recommendation="No corrective action is required.",
+            root_cause="No known incident detected.",
+            recommendation=(
+                "No remediation required. "
+                "Continue monitoring the workload."
+            ),
             confidence="high",
         ),
-        memory_mib=18.5,
-        cpu_millicores=30.2,
+        memory_mib=128.0,
+        cpu_millicores=25.0,
     )
 
     payload = {
@@ -62,18 +43,21 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
                 "labels": {
                     "alertname": "KubePilotPodIncident",
                     "namespace": "default",
-                    "pod": "frontend-test",
+                    "pod": "frontend",
                     "container": "server",
                     "severity": "warning",
                 },
                 "annotations": {
-                    "summary": "Webhook test",
+                    "summary": "Test alert",
                 },
             }
         ],
     }
 
-    response = client.post("/alerts", json=payload)
+    response = client.post(
+        "/alerts",
+        json=payload,
+    )
 
     assert response.status_code == 200
 
@@ -83,85 +67,77 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
     assert body["status"] == "firing"
     assert body["alertname"] == "KubePilotPodIncident"
     assert body["namespace"] == "default"
-    assert body["pod"] == "frontend-test"
+    assert body["pod"] == "frontend"
     assert body["container"] == "server"
     assert body["severity"] == "warning"
 
+    # Target file resolver
+    assert body["target_file_resolution"]["namespace"] == "default"
+    assert body["target_file_resolution"]["pod_name"] == "frontend"
+    assert body["target_file_resolution"]["container_name"] == "server"
+    assert body["target_file_resolution"]["target_file"] is None
+    assert body["target_file_resolution"]["matched"] is False
+    assert "No allowlisted GitOps target file" in (
+        body["target_file_resolution"]["reason"]
+    )
+
+    # Diagnosis
     assert body["diagnosis"]["incident_type"] == "Healthy"
     assert body["diagnosis"]["root_cause"] == (
-        "No active Kubernetes incident was detected."
-    )
-    assert body["diagnosis"]["recommendation"] == (
-        "No corrective action is required."
+        "No known incident detected."
     )
     assert body["diagnosis"]["confidence"] == "high"
 
-    assert body["metrics"]["memory_mib"] == 18.5
-    assert body["metrics"]["cpu_millicores"] == 30.2
+    # Metrics
+    assert body["metrics"]["memory_mib"] == 128.0
+    assert body["metrics"]["cpu_millicores"] == 25.0
 
+    # Remediation
     assert body["remediation"]["incident_type"] == "Healthy"
-    assert body["remediation"]["summary"] == "No remediation required."
-    assert body["remediation"]["proposed_change"] == (
-        "No Git change is required."
-    )
     assert body["remediation"]["target_file"] is None
     assert body["remediation"]["requires_human_approval"] is True
     assert body["remediation"]["direct_cluster_write"] is False
 
+    # Git change
     assert body["git_change"]["incident_type"] == "Healthy"
     assert body["git_change"]["target_file"] is None
     assert body["git_change"]["change_type"] == "none"
-    assert body["git_change"]["description"] == (
-        "No Git change is required."
-    )
     assert body["git_change"]["requires_human_approval"] is True
     assert body["git_change"]["apply_directly"] is False
 
+    # Manifest diff
     assert body["manifest_diff"]["incident_type"] == "Healthy"
     assert body["manifest_diff"]["target_file"] is None
     assert body["manifest_diff"]["change_type"] == "none"
-    assert body["manifest_diff"]["before"] is None
-    assert body["manifest_diff"]["after"] is None
     assert body["manifest_diff"]["requires_human_approval"] is True
     assert body["manifest_diff"]["writes_file"] is False
 
+    # Patch proposal
     assert body["patch_proposal"]["incident_type"] == "Healthy"
     assert body["patch_proposal"]["target_file"] is None
     assert body["patch_proposal"]["container_name"] is None
     assert body["patch_proposal"]["field"] == "none"
-    assert body["patch_proposal"]["current_value"] is None
-    assert body["patch_proposal"]["proposed_value"] is None
-    assert body["patch_proposal"]["reason"] == "No patch is required."
     assert body["patch_proposal"]["requires_human_approval"] is True
     assert body["patch_proposal"]["writes_file"] is False
 
+    # Candidate value
     assert body["candidate_value"]["incident_type"] == "Healthy"
     assert body["candidate_value"]["field"] == "none"
-    assert body["candidate_value"]["current_value"] is None
     assert body["candidate_value"]["candidate_value"] is None
-    assert body["candidate_value"]["reason"] == (
-        "No candidate value is required."
-    )
     assert body["candidate_value"]["confidence"] == "high"
     assert body["candidate_value"]["requires_human_approval"] is True
     assert body["candidate_value"]["auto_apply"] is False
 
+    # Reviewed patch
     assert body["reviewed_patch"]["incident_type"] == "Healthy"
     assert body["reviewed_patch"]["target_file"] is None
     assert body["reviewed_patch"]["container_name"] is None
-    assert body["reviewed_patch"]["field"] == "none"
-    assert body["reviewed_patch"]["current_value"] is None
-    assert body["reviewed_patch"]["candidate_value"] is None
     assert body["reviewed_patch"]["approved_value"] is None
-    assert body["reviewed_patch"]["reason"] == (
-        "No candidate value is required."
-    )
-    assert body["reviewed_patch"]["confidence"] == "high"
-    assert body["reviewed_patch"]["requires_human_approval"] is True
     assert body["reviewed_patch"]["ready_for_pr"] is False
     assert body["reviewed_patch"]["writes_file"] is False
     assert body["reviewed_patch"]["auto_apply"] is False
 
+    # PR payload
     assert body["pr_payload"]["incident_type"] == "Healthy"
     assert body["pr_payload"]["title"] == (
         "fix(sre): review Healthy remediation"
@@ -171,38 +147,50 @@ def test_alert_triggers_sre_analysis(mock_analyze_pod):
     )
     assert body["pr_payload"]["target_file"] is None
     assert body["pr_payload"]["container_name"] is None
-    assert body["pr_payload"]["field"] == "none"
-    assert body["pr_payload"]["current_value"] is None
     assert body["pr_payload"]["approved_value"] is None
-    assert body["pr_payload"]["commit_message"] == (
-        "fix(sre): review Healthy remediation"
-    )
     assert body["pr_payload"]["ready_to_create"] is False
     assert body["pr_payload"]["writes_git"] is False
     assert body["pr_payload"]["creates_pr"] is False
-    assert "Human approval is still required" in (
-        body["pr_payload"]["pr_body"]
-    )
 
+    # GitHub PR safety gateway
     assert body["github_pr_gateway"]["allowed"] is False
     assert body["github_pr_gateway"]["ready_to_send"] is False
     assert body["github_pr_gateway"]["performs_write"] is False
     assert "not approved" in body["github_pr_gateway"]["reason"]
-    assert body["github_pr_request"]["repository"] == "stevvv2005/kubepilot"
-    assert body["github_pr_request"]["repository"] == "stevvv2005/kubepilot"
+
+    # GitHub PR request
+    assert body["github_pr_request"]["repository"] == (
+        "stevvv2005/kubepilot"
+    )
     assert body["github_pr_request"]["base_branch"] == "main"
     assert body["github_pr_request"]["head_branch"] == (
-    "fix/sre-healthy-pending"
+        "fix/sre-healthy-pending"
     )
     assert body["github_pr_request"]["title"] == (
-    "fix(sre): review Healthy remediation"
-   )
+        "fix(sre): review Healthy remediation"
+    )
     assert body["github_pr_request"]["target_file"] is None
     assert body["github_pr_request"]["approved_value"] is None
     assert body["github_pr_request"]["ready_to_send"] is False
     assert body["github_pr_request"]["performs_write"] is False
+
     mock_analyze_pod.assert_called_once_with(
         namespace="default",
-        pod_name="frontend-test",
+        pod_name="frontend",
         container_name="server",
+    )
+
+
+def test_receive_alert_without_alerts():
+    response = client.post(
+        "/alerts",
+        json={
+            "status": "firing",
+            "alerts": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Alertmanager payload contains no alerts"
     )

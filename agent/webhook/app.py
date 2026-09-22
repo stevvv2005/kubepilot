@@ -13,11 +13,12 @@ from agent.sre_agent.patch_proposal import build_patch_proposal
 from agent.sre_agent.pr_payload import build_pr_payload
 from agent.sre_agent.remediation import build_remediation_proposal
 from agent.sre_agent.reviewed_patch import build_reviewed_patch_payload
+from agent.sre_agent.target_file_resolver import resolve_target_file
 
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="1.1.0",
+    version="1.2.0",
 )
 
 
@@ -57,6 +58,12 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             detail="Alert must contain namespace, pod, and container labels",
         )
 
+    target_resolution = resolve_target_file(
+        namespace=namespace,
+        pod_name=pod,
+        container_name=container,
+    )
+
     analysis = analyze_pod(
         namespace=namespace,
         pod_name=pod,
@@ -65,6 +72,7 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
 
     remediation = build_remediation_proposal(
         analysis.diagnosis,
+        target_file=target_resolution.target_file,
     )
 
     git_change = build_git_change_proposal(
@@ -115,16 +123,28 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
         "pod": pod,
         "container": container,
         "severity": first_alert.labels.get("severity"),
+
+        "target_file_resolution": {
+            "namespace": target_resolution.namespace,
+            "pod_name": target_resolution.pod_name,
+            "container_name": target_resolution.container_name,
+            "target_file": target_resolution.target_file,
+            "matched": target_resolution.matched,
+            "reason": target_resolution.reason,
+        },
+
         "diagnosis": {
             "incident_type": analysis.diagnosis.incident_type,
             "root_cause": analysis.diagnosis.root_cause,
             "recommendation": analysis.diagnosis.recommendation,
             "confidence": analysis.diagnosis.confidence,
         },
+
         "metrics": {
             "memory_mib": analysis.memory_mib,
             "cpu_millicores": analysis.cpu_millicores,
         },
+
         "remediation": {
             "incident_type": remediation.incident_type,
             "summary": remediation.summary,
@@ -135,6 +155,7 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             ),
             "direct_cluster_write": remediation.direct_cluster_write,
         },
+
         "git_change": {
             "incident_type": git_change.incident_type,
             "target_file": git_change.target_file,
@@ -145,6 +166,7 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             ),
             "apply_directly": git_change.apply_directly,
         },
+
         "manifest_diff": {
             "incident_type": manifest_diff.incident_type,
             "target_file": manifest_diff.target_file,
@@ -156,6 +178,7 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             ),
             "writes_file": manifest_diff.writes_file,
         },
+
         "patch_proposal": {
             "incident_type": patch_proposal.incident_type,
             "target_file": patch_proposal.target_file,
@@ -169,6 +192,7 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             ),
             "writes_file": patch_proposal.writes_file,
         },
+
         "candidate_value": {
             "incident_type": candidate_value.incident_type,
             "field": candidate_value.field,
@@ -181,6 +205,7 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             ),
             "auto_apply": candidate_value.auto_apply,
         },
+
         "reviewed_patch": {
             "incident_type": reviewed_patch.incident_type,
             "target_file": reviewed_patch.target_file,
@@ -198,6 +223,7 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "writes_file": reviewed_patch.writes_file,
             "auto_apply": reviewed_patch.auto_apply,
         },
+
         "pr_payload": {
             "incident_type": pr_payload.incident_type,
             "title": pr_payload.title,
@@ -213,12 +239,14 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "writes_git": pr_payload.writes_git,
             "creates_pr": pr_payload.creates_pr,
         },
+
         "github_pr_gateway": {
             "allowed": github_pr_gateway.allowed,
             "reason": github_pr_gateway.reason,
             "ready_to_send": github_pr_gateway.ready_to_send,
             "performs_write": github_pr_gateway.performs_write,
         },
+
         "github_pr_request": {
             "repository": github_pr_request.repository,
             "base_branch": github_pr_request.base_branch,
