@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -8,6 +8,10 @@ from agent.sre_agent.candidate_value import suggest_candidate_value
 from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.github_pr import validate_pr_payload_for_github
 from agent.sre_agent.github_request import build_github_pr_request
+from agent.sre_agent.human_approval import (
+    HumanApprovalDecision,
+    apply_human_approval,
+)
 from agent.sre_agent.manifest_diff import build_manifest_diff_proposal
 from agent.sre_agent.patch_proposal import build_patch_proposal
 from agent.sre_agent.pr_payload import build_pr_payload
@@ -18,7 +22,7 @@ from agent.sre_agent.target_file_resolver import resolve_target_file
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="1.2.0",
+    version="1.3.0",
 )
 
 
@@ -31,6 +35,16 @@ class Alert(BaseModel):
 class AlertmanagerPayload(BaseModel):
     status: str
     alerts: List[Alert] = Field(default_factory=list)
+
+
+class ApprovalRequest(BaseModel):
+    namespace: str
+    pod_name: str
+    container_name: str
+    approved: bool
+    approved_value: Optional[str] = None
+    reviewer: str
+    reason: str
 
 
 @app.get("/health")
@@ -253,6 +267,151 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "head_branch": github_pr_request.head_branch,
             "title": github_pr_request.title,
             "body": github_pr_request.body,
+            "target_file": github_pr_request.target_file,
+            "approved_value": github_pr_request.approved_value,
+            "ready_to_send": github_pr_request.ready_to_send,
+            "performs_write": github_pr_request.performs_write,
+        },
+    }
+
+
+@app.post("/approvals")
+def approve_remediation(request: ApprovalRequest) -> dict:
+    target_resolution = resolve_target_file(
+        namespace=request.namespace,
+        pod_name=request.pod_name,
+        container_name=request.container_name,
+    )
+
+    if not target_resolution.matched:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No allowlisted GitOps target file matches "
+                "this workload."
+            ),
+        )
+
+    analysis = analyze_pod(
+        namespace=request.namespace,
+        pod_name=request.pod_name,
+        container_name=request.container_name,
+    )
+
+    remediation = build_remediation_proposal(
+        analysis.diagnosis,
+        target_file=target_resolution.target_file,
+    )
+
+    git_change = build_git_change_proposal(
+        remediation,
+    )
+
+    manifest_diff = build_manifest_diff_proposal(
+        git_change=git_change,
+        container_name=request.container_name,
+    )
+
+    patch_proposal = build_patch_proposal(
+        manifest_diff=manifest_diff,
+        container_name=request.container_name,
+    )
+
+    candidate_value = suggest_candidate_value(
+        incident_type=patch_proposal.incident_type,
+        field=patch_proposal.field,
+        current_value=patch_proposal.current_value,
+    )
+
+    decision = HumanApprovalDecision(
+        approved=request.approved,
+        approved_value=request.approved_value,
+        reviewer=request.reviewer,
+        reason=request.reason,
+    )
+
+    try:
+        reviewed_patch = apply_human_approval(
+            patch_proposal=patch_proposal,
+            candidate_value=candidate_value,
+            decision=decision,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    pr_payload = build_pr_payload(
+        reviewed_patch=reviewed_patch,
+    )
+
+    github_pr_gateway = validate_pr_payload_for_github(
+        payload=pr_payload,
+    )
+
+    github_pr_request = build_github_pr_request(
+        repository="stevvv2005/kubepilot",
+        base_branch="main",
+        payload=pr_payload,
+        gateway=github_pr_gateway,
+    )
+
+    return {
+        "approval": {
+            "approved": request.approved,
+            "approved_value": reviewed_patch.approved_value,
+            "reviewer": request.reviewer,
+            "reason": request.reason,
+        },
+
+        "target_file_resolution": {
+            "target_file": target_resolution.target_file,
+            "matched": target_resolution.matched,
+            "reason": target_resolution.reason,
+        },
+
+        "candidate_value": {
+            "candidate_value": candidate_value.candidate_value,
+            "confidence": candidate_value.confidence,
+            "auto_apply": candidate_value.auto_apply,
+        },
+
+        "reviewed_patch": {
+            "incident_type": reviewed_patch.incident_type,
+            "target_file": reviewed_patch.target_file,
+            "container_name": reviewed_patch.container_name,
+            "field": reviewed_patch.field,
+            "current_value": reviewed_patch.current_value,
+            "candidate_value": reviewed_patch.candidate_value,
+            "approved_value": reviewed_patch.approved_value,
+            "ready_for_pr": reviewed_patch.ready_for_pr,
+            "writes_file": reviewed_patch.writes_file,
+            "auto_apply": reviewed_patch.auto_apply,
+        },
+
+        "pr_payload": {
+            "title": pr_payload.title,
+            "branch_name": pr_payload.branch_name,
+            "target_file": pr_payload.target_file,
+            "approved_value": pr_payload.approved_value,
+            "ready_to_create": pr_payload.ready_to_create,
+            "writes_git": pr_payload.writes_git,
+            "creates_pr": pr_payload.creates_pr,
+        },
+
+        "github_pr_gateway": {
+            "allowed": github_pr_gateway.allowed,
+            "reason": github_pr_gateway.reason,
+            "ready_to_send": github_pr_gateway.ready_to_send,
+            "performs_write": github_pr_gateway.performs_write,
+        },
+
+        "github_pr_request": {
+            "repository": github_pr_request.repository,
+            "base_branch": github_pr_request.base_branch,
+            "head_branch": github_pr_request.head_branch,
+            "title": github_pr_request.title,
             "target_file": github_pr_request.target_file,
             "approved_value": github_pr_request.approved_value,
             "ready_to_send": github_pr_request.ready_to_send,
