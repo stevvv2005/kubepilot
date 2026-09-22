@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional
+from urllib.error import URLError
 
 from agent.mcp_servers.kubernetes import get_pod_incident_context
 from agent.mcp_servers.prometheus import get_pod_metrics
@@ -12,8 +13,8 @@ class PodAnalysis:
     pod_name: str
     container_name: str
     diagnosis: Diagnosis
-    memory_mib: Optional[float]
-    cpu_millicores: Optional[float]
+    memory_mib: Optional[float] = None
+    cpu_millicores: Optional[float] = None
 
 
 def analyze_pod(
@@ -23,21 +24,22 @@ def analyze_pod(
     prometheus_url: str = "http://localhost:9092",
 ) -> PodAnalysis:
     """
-    Analyze a Kubernetes pod using read-only Kubernetes data
-    and Prometheus metrics when available.
+    Analyze a Kubernetes pod incident.
 
-    Metrics are optional because some incidents, such as
-    ImagePullBackOff, may occur before the container ever starts.
+    Kubernetes runtime state is the primary source of truth.
+
+    Prometheus metrics are optional enrichment data.
+    A missing metric or unavailable Prometheus server must not
+    prevent the Kubernetes incident from being diagnosed.
     """
 
-    context = get_pod_incident_context(
+    incident_context = get_pod_incident_context(
         namespace=namespace,
         pod_name=pod_name,
         container_name=container_name,
     )
 
-    pod_metrics = None
-    runtime_metrics = None
+    metrics: Optional[RuntimeMetrics] = None
 
     try:
         pod_metrics = get_pod_metrics(
@@ -46,26 +48,34 @@ def analyze_pod(
             base_url=prometheus_url,
         )
 
-        runtime_metrics = RuntimeMetrics(
+        metrics = RuntimeMetrics(
             memory_mib=pod_metrics.memory_mib,
             cpu_millicores=pod_metrics.cpu_millicores,
         )
 
-    except RuntimeError:
-        # Some incidents happen before the container starts,
-        # so Prometheus may not have CPU or memory metrics yet.
-        pass
+    except (RuntimeError, URLError):
+        # Prometheus is enrichment only.
+        # Continue the diagnosis using Kubernetes state.
+        metrics = None
 
-    result = diagnose(
-        context=context,
-        metrics=runtime_metrics,
+    diagnosis = diagnose(
+        context=incident_context,
+        metrics=metrics,
     )
 
     return PodAnalysis(
         namespace=namespace,
         pod_name=pod_name,
         container_name=container_name,
-        diagnosis=result,
-        memory_mib=pod_metrics.memory_mib if pod_metrics else None,
-        cpu_millicores=pod_metrics.cpu_millicores if pod_metrics else None,
+        diagnosis=diagnosis,
+        memory_mib=(
+            metrics.memory_mib
+            if metrics is not None
+            else None
+        ),
+        cpu_millicores=(
+            metrics.cpu_millicores
+            if metrics is not None
+            else None
+        ),
     )
