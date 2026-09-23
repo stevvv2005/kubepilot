@@ -99,6 +99,7 @@ def test_approve_oom_remediation(mock_analyze_pod):
 
     # Git commit dry-run
     assert body["git_commit_dry_run"] is not None
+
     assert body["git_commit_dry_run"]["target_file"] == (
         "chaos/oomkilled-pod.yaml"
     )
@@ -107,6 +108,9 @@ def test_approve_oom_remediation(mock_analyze_pod):
     )
     assert body["git_commit_dry_run"]["commit_message"] == (
         "fix(sre): remediate OOMKilled"
+    )
+    assert "memory: 64Mi" in (
+        body["git_commit_dry_run"]["rendered_yaml"]
     )
     assert body["git_commit_dry_run"]["ready_to_commit"] is True
     assert body["git_commit_dry_run"]["performs_write"] is False
@@ -139,7 +143,7 @@ def test_approve_oom_remediation(mock_analyze_pod):
     assert body["github_pr_request"]["ready_to_send"] is True
     assert body["github_pr_request"]["performs_write"] is False
 
-    # Final Git execution request
+    # Git execution request
     assert body["git_execution_request"] is not None
 
     assert body["git_execution_request"]["repository"] == (
@@ -149,24 +153,19 @@ def test_approve_oom_remediation(mock_analyze_pod):
     assert body["git_execution_request"]["head_branch"] == (
         "fix/sre-oomkilled"
     )
-
     assert body["git_execution_request"]["target_file"] == (
         "chaos/oomkilled-pod.yaml"
     )
-
     assert body["git_execution_request"]["commit_message"] == (
         "fix(sre): remediate OOMKilled"
     )
-
     assert "memory: 64Mi" in (
         body["git_execution_request"]["rendered_yaml"]
     )
-
     assert body["git_execution_request"]["pr_title"] == (
         "fix(sre): remediate OOMKilled"
     )
 
-    # These describe the operations a future executor may perform.
     assert body["git_execution_request"]["create_branch"] is True
     assert body["git_execution_request"]["write_file"] is True
     assert body["git_execution_request"]["create_commit"] is True
@@ -174,13 +173,41 @@ def test_approve_oom_remediation(mock_analyze_pod):
     assert body["git_execution_request"]["create_pr"] is True
 
     assert body["git_execution_request"]["authorized"] is True
-
-    # This builder still performs no write itself.
     assert body["git_execution_request"]["performs_write"] is False
+
+    # Git executor dry-run result
+    assert body["git_execution_result"] is not None
+
+    assert body["git_execution_result"]["repository"] == (
+        "stevvv2005/kubepilot"
+    )
+    assert body["git_execution_result"]["base_branch"] == "main"
+    assert body["git_execution_result"]["head_branch"] == (
+        "fix/sre-oomkilled"
+    )
+
+    assert body["git_execution_result"]["target_file"] == (
+        "chaos/oomkilled-pod.yaml"
+    )
+
+    assert body["git_execution_result"]["commit_message"] == (
+        "fix(sre): remediate OOMKilled"
+    )
+
+    assert body["git_execution_result"]["dry_run"] is True
+
+    assert body["git_execution_result"]["would_create_branch"] is True
+    assert body["git_execution_result"]["would_write_file"] is True
+    assert body["git_execution_result"]["would_create_commit"] is True
+    assert body["git_execution_result"]["would_push_branch"] is True
+    assert body["git_execution_result"]["would_create_pr"] is True
+
+    assert body["git_execution_result"]["executed"] is False
+    assert body["git_execution_result"]["performs_write"] is False
 
 
 @patch("agent.webhook.app.analyze_pod")
-def test_rejected_approval_does_not_create_execution_request(
+def test_rejected_approval_does_not_create_execution_result(
     mock_analyze_pod,
 ):
     mock_analyze_pod.return_value = SimpleNamespace(
@@ -222,9 +249,10 @@ def test_rejected_approval_does_not_create_execution_request(
     assert body["approved_manifest"] is None
     assert body["git_commit_dry_run"] is None
     assert body["git_execution_gateway"] is None
-
-    # Rejected remediation must never produce an execution request.
     assert body["git_execution_request"] is None
+
+    # Rejected approval must never reach the executor.
+    assert body["git_execution_result"] is None
 
     assert body["pr_payload"]["ready_to_create"] is False
     assert body["pr_payload"]["writes_git"] is False
