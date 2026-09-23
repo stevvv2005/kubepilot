@@ -2,7 +2,7 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-
+from agent.finops_agent.live_rightsizing import generate_live_rightsizing
 from agent.finops_agent.live_report import generate_live_finops_report
 from agent.finops_agent.opencost_client import OpenCostClient
 
@@ -131,7 +131,84 @@ def get_finops_report(
             for recommendation in report.recommendations
         ],
     }
+@app.get("/finops/rightsizing")
+def get_finops_rightsizing(
+    namespace: Optional[str] = None,
+    window: str = "1h",
+) -> dict:
+    """
+    Return live read-only FinOps rightsizing proposals
+    generated from OpenCost allocation data.
+    """
 
+    client = OpenCostClient()
+
+    try:
+        result = generate_live_rightsizing(
+            client=client,
+            window=window,
+            namespace=namespace,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Unable to generate FinOps rightsizing "
+                f"proposals from OpenCost: {exc}"
+            ),
+        ) from exc
+
+    return {
+        "source": result.source,
+        "namespace": result.namespace_filter,
+        "total_workloads": result.total_workloads,
+        "waste_candidates": result.waste_candidates,
+        "read_only": result.read_only,
+        "performs_write": result.performs_write,
+        "requires_human_approval": (
+            result.requires_human_approval
+        ),
+        "auto_apply": result.auto_apply,
+        "proposals": [
+            {
+                "namespace": proposal.namespace,
+                "workload_name": proposal.workload_name,
+                "workload_type": proposal.workload_type,
+                "current_cpu_request_cores": (
+                    proposal.current_cpu_request_cores
+                ),
+                "current_memory_request_mib": (
+                    proposal.current_memory_request_mib
+                ),
+                "suggested_cpu_request_cores": (
+                    proposal.suggested_cpu_request_cores
+                ),
+                "suggested_memory_request_mib": (
+                    proposal.suggested_memory_request_mib
+                ),
+                "cpu_utilization_pct": (
+                    proposal.cpu_utilization_pct
+                ),
+                "memory_utilization_pct": (
+                    proposal.memory_utilization_pct
+                ),
+                "current_monthly_cost_usd": (
+                    proposal.current_monthly_cost_usd
+                ),
+                "estimated_monthly_savings_usd": (
+                    proposal.estimated_monthly_savings_usd
+                ),
+                "reason": proposal.reason,
+                "confidence": proposal.confidence,
+                "requires_human_approval": (
+                    proposal.requires_human_approval
+                ),
+                "auto_apply": proposal.auto_apply,
+                "performs_write": proposal.performs_write,
+            }
+            for proposal in result.proposals
+        ],
+    }
 
 @app.post("/alerts")
 def receive_alerts(payload: AlertmanagerPayload) -> dict:
