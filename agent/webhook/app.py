@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from agent.sre_agent.analyzer import analyze_pod
+from agent.sre_agent.approved_manifest import render_approved_manifest
 from agent.sre_agent.candidate_value import suggest_candidate_value
 from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.github_pr import validate_pr_payload_for_github
@@ -22,7 +23,7 @@ from agent.sre_agent.target_file_resolver import resolve_target_file
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="1.3.0",
+    version="1.4.0",
 )
 
 
@@ -342,6 +343,20 @@ def approve_remediation(request: ApprovalRequest) -> dict:
             detail=str(exc),
         ) from exc
 
+    approved_manifest = None
+
+    if reviewed_patch.ready_for_pr:
+        try:
+            approved_manifest = render_approved_manifest(
+                reviewed_patch=reviewed_patch,
+                repository_root=".",
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=str(exc),
+            ) from exc
+
     pr_payload = build_pr_payload(
         reviewed_patch=reviewed_patch,
     )
@@ -389,6 +404,21 @@ def approve_remediation(request: ApprovalRequest) -> dict:
             "writes_file": reviewed_patch.writes_file,
             "auto_apply": reviewed_patch.auto_apply,
         },
+
+        "approved_manifest": (
+            {
+                "target_file": approved_manifest.target_file,
+                "container_name": approved_manifest.container_name,
+                "field": approved_manifest.field,
+                "approved_value": approved_manifest.approved_value,
+                "rendered_yaml": approved_manifest.rendered_yaml,
+                "ready_for_commit": approved_manifest.ready_for_commit,
+                "writes_file": approved_manifest.writes_file,
+                "writes_git": approved_manifest.writes_git,
+            }
+            if approved_manifest is not None
+            else None
+        ),
 
         "pr_payload": {
             "title": pr_payload.title,
