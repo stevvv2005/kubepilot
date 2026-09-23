@@ -43,24 +43,28 @@ def test_approve_oom_remediation(mock_analyze_pod):
 
     body = response.json()
 
+    # Human approval
     assert body["approval"]["approved"] is True
     assert body["approval"]["approved_value"] == "64Mi"
     assert body["approval"]["reviewer"] == "human-reviewer"
 
+    # Target resolution
     assert body["target_file_resolution"]["matched"] is True
     assert body["target_file_resolution"]["target_file"] == (
         "chaos/oomkilled-pod.yaml"
     )
 
+    # Candidate
     assert body["candidate_value"]["candidate_value"] == "64Mi"
     assert body["candidate_value"]["auto_apply"] is False
 
+    # Reviewed patch
     assert body["reviewed_patch"]["approved_value"] == "64Mi"
     assert body["reviewed_patch"]["ready_for_pr"] is True
     assert body["reviewed_patch"]["writes_file"] is False
     assert body["reviewed_patch"]["auto_apply"] is False
 
-    # Approved manifest rendered entirely in memory.
+    # Approved manifest
     assert body["approved_manifest"] is not None
     assert body["approved_manifest"]["target_file"] == (
         "chaos/oomkilled-pod.yaml"
@@ -74,32 +78,62 @@ def test_approve_oom_remediation(mock_analyze_pod):
     assert body["approved_manifest"]["writes_file"] is False
     assert body["approved_manifest"]["writes_git"] is False
 
-    rendered = yaml.safe_load(
+    rendered_manifest = yaml.safe_load(
         body["approved_manifest"]["rendered_yaml"]
     )
 
-    container = rendered["spec"]["containers"][0]
+    container = rendered_manifest["spec"]["containers"][0]
 
     assert container["name"] == "memory-hog"
     assert container["resources"]["limits"]["memory"] == "64Mi"
 
-    # PR preparation becomes eligible after explicit human approval.
+    # PR payload
     assert body["pr_payload"]["approved_value"] == "64Mi"
+    assert body["pr_payload"]["branch_name"] == "fix/sre-oomkilled"
+    assert body["pr_payload"]["commit_message"] == (
+        "fix(sre): remediate OOMKilled"
+    )
     assert body["pr_payload"]["ready_to_create"] is True
     assert body["pr_payload"]["writes_git"] is False
     assert body["pr_payload"]["creates_pr"] is False
 
+    # Git commit dry-run
+    assert body["git_commit_dry_run"] is not None
+
+    assert body["git_commit_dry_run"]["target_file"] == (
+        "chaos/oomkilled-pod.yaml"
+    )
+
+    assert body["git_commit_dry_run"]["branch_name"] == (
+        "fix/sre-oomkilled"
+    )
+
+    assert body["git_commit_dry_run"]["commit_message"] == (
+        "fix(sre): remediate OOMKilled"
+    )
+
+    assert "memory: 64Mi" in (
+        body["git_commit_dry_run"]["rendered_yaml"]
+    )
+
+    assert body["git_commit_dry_run"]["ready_to_commit"] is True
+    assert body["git_commit_dry_run"]["performs_write"] is False
+    assert body["git_commit_dry_run"]["writes_file"] is False
+    assert body["git_commit_dry_run"]["writes_git"] is False
+
+    # GitHub safety gateway
     assert body["github_pr_gateway"]["allowed"] is True
     assert body["github_pr_gateway"]["ready_to_send"] is True
     assert body["github_pr_gateway"]["performs_write"] is False
 
+    # GitHub request
     assert body["github_pr_request"]["approved_value"] == "64Mi"
     assert body["github_pr_request"]["ready_to_send"] is True
     assert body["github_pr_request"]["performs_write"] is False
 
 
 @patch("agent.webhook.app.analyze_pod")
-def test_rejected_approval_does_not_render_manifest(
+def test_rejected_approval_does_not_create_commit_plan(
     mock_analyze_pod,
 ):
     mock_analyze_pod.return_value = SimpleNamespace(
@@ -138,10 +172,14 @@ def test_rejected_approval_does_not_render_manifest(
     assert body["reviewed_patch"]["approved_value"] is None
     assert body["reviewed_patch"]["ready_for_pr"] is False
 
-    # No approved YAML may be produced after rejection.
     assert body["approved_manifest"] is None
 
+    # Rejected approval must never prepare a Git commit.
+    assert body["git_commit_dry_run"] is None
+
     assert body["pr_payload"]["ready_to_create"] is False
+    assert body["pr_payload"]["writes_git"] is False
+    assert body["pr_payload"]["creates_pr"] is False
 
     assert body["github_pr_gateway"]["allowed"] is False
     assert body["github_pr_gateway"]["ready_to_send"] is False
