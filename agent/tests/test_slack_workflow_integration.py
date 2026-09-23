@@ -286,3 +286,7 @@ def test_finops_approval_includes_slack_dry_run(
     assert slack["would_send"] is True
     assert slack["sent"] is False
     assert slack["performs_write"] is False
+    assert (
+    slack["external_request_performed"]
+    is False
+)

@@ -880,6 +880,9 @@ def approve_finops_change(
                 slack_result.would_send
             ),
             "sent": slack_result.sent,
+            "external_request_performed": (
+    slack_result.external_request_performed
+            ),
             "performs_write": (
                 slack_result.performs_write
             ),
