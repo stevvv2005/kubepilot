@@ -1,8 +1,22 @@
+import json
+import os
 from dataclasses import dataclass
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from agent.notifications.slack_payload import (
     SlackNotificationPayload,
 )
+
+
+DEFAULT_SLACK_TIMEOUT_SECONDS = 5.0
+
+SLACK_WEBHOOK_ENV_VAR = "SLACK_WEBHOOK_URL"
+
+ALLOWED_SLACK_WEBHOOK_HOSTS = {
+    "hooks.slack.com",
+}
 
 
 @dataclass(frozen=True)
@@ -17,26 +31,14 @@ class SlackSendResult:
 
     destination: str
 
+    external_request_performed: bool
+
     performs_write: bool = False
 
 
-def send_slack_notification(
+def _validate_payload(
     payload: SlackNotificationPayload,
-    *,
-    destination: str,
-    dry_run: bool = True,
-) -> SlackSendResult:
-    """
-    Send a Slack notification in dry-run mode only.
-
-    Real Slack delivery is intentionally disabled.
-    """
-
-    if not destination.strip():
-        raise ValueError(
-            "Slack destination is required."
-        )
-
+) -> None:
     if payload.performs_write:
         raise ValueError(
             "Slack payload unexpectedly declares "
@@ -53,18 +55,238 @@ def send_slack_notification(
             "Slack notification type is required."
         )
 
-    if not dry_run:
+
+def _validate_destination(
+    destination: str,
+) -> None:
+    if not destination.strip():
         raise ValueError(
-            "Real Slack delivery is disabled. "
-            "Use dry_run=True."
+            "Slack destination is required."
         )
 
-    return SlackSendResult(
-        notification_type=payload.notification_type,
-        title=payload.title,
-        dry_run=True,
-        would_send=True,
-        sent=False,
+
+def _get_slack_webhook_url() -> str:
+    webhook_url = os.getenv(
+        SLACK_WEBHOOK_ENV_VAR,
+        "",
+    ).strip()
+
+    if not webhook_url:
+        raise ValueError(
+            "SLACK_WEBHOOK_URL is required "
+            "for real Slack delivery."
+        )
+
+    return webhook_url
+
+
+def _validate_slack_webhook_url(
+    webhook_url: str,
+) -> None:
+    parsed = urlparse(webhook_url)
+
+    if parsed.scheme != "https":
+        raise ValueError(
+            "Slack webhook URL must use HTTPS."
+        )
+
+    if parsed.hostname not in ALLOWED_SLACK_WEBHOOK_HOSTS:
+        raise ValueError(
+            "Slack webhook URL host is not allowed."
+        )
+
+    if not parsed.path.startswith("/services/"):
+        raise ValueError(
+            "Slack webhook URL path is invalid."
+        )
+
+    path_parts = [
+        part
+        for part in parsed.path.split("/")
+        if part
+    ]
+
+    if len(path_parts) < 4:
+        raise ValueError(
+            "Slack webhook URL path is incomplete."
+        )
+
+    if parsed.username or parsed.password:
+        raise ValueError(
+            "Slack webhook URL must not contain credentials."
+        )
+
+    if parsed.query or parsed.fragment:
+        raise ValueError(
+            "Slack webhook URL must not contain "
+            "query parameters or fragments."
+        )
+
+
+def _build_slack_message(
+    payload: SlackNotificationPayload,
+    destination: str,
+) -> str:
+    details = "\n".join(
+        f"• {detail}"
+        for detail in payload.details
+    )
+
+    return (
+        f"*{payload.title}*\n"
+        f"{payload.summary}\n\n"
+        f"*Type:* {payload.notification_type}\n"
+        f"*Severity:* {payload.severity}\n"
+        f"*Status:* {payload.status}\n"
+        f"*Namespace:* {payload.namespace or 'N/A'}\n"
+        f"*Workload:* {payload.workload_name or 'N/A'}\n"
+        f"*Destination:* {destination}\n"
+        f"*Human approval required:* "
+        f"{payload.requires_human_approval}\n\n"
+        f"{details}"
+    )
+
+
+def _post_slack_webhook(
+    *,
+    webhook_url: str,
+    message: str,
+    timeout_seconds: float,
+) -> None:
+    body = json.dumps(
+        {
+            "text": message,
+        }
+    ).encode("utf-8")
+
+    request = Request(
+        webhook_url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "KubePilot/1.0",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(
+            request,
+            timeout=timeout_seconds,
+        ) as response:
+            status_code = response.getcode()
+
+            response_body = (
+                response.read()
+                .decode(
+                    "utf-8",
+                    errors="replace",
+                )
+                .strip()
+            )
+
+    except HTTPError as exc:
+        raise RuntimeError(
+            "Slack webhook returned HTTP "
+            f"{exc.code}."
+        ) from exc
+
+    except URLError as exc:
+        raise RuntimeError(
+            "Unable to reach Slack webhook."
+        ) from exc
+
+    except TimeoutError as exc:
+        raise RuntimeError(
+            "Slack webhook request timed out."
+        ) from exc
+
+    if status_code < 200 or status_code >= 300:
+        raise RuntimeError(
+            "Slack webhook returned unexpected "
+            f"HTTP status {status_code}."
+        )
+
+    if response_body.lower() != "ok":
+        raise RuntimeError(
+            "Slack webhook returned an unexpected response."
+        )
+
+
+def send_slack_notification(
+    payload: SlackNotificationPayload,
+    *,
+    destination: str,
+    dry_run: bool = True,
+    timeout_seconds: float = (
+        DEFAULT_SLACK_TIMEOUT_SECONDS
+    ),
+) -> SlackSendResult:
+    """
+    Send a KubePilot Slack notification.
+
+    Safety rules:
+
+    - dry-run is enabled by default
+    - dry-run performs no network request
+    - webhook URL comes only from SLACK_WEBHOOK_URL
+    - only Slack HTTPS webhook URLs are accepted
+    - no Git or Kubernetes write is performed
+    """
+
+    _validate_destination(
+        destination,
+    )
+
+    _validate_payload(
+        payload,
+    )
+
+    if timeout_seconds <= 0:
+        raise ValueError(
+            "Slack timeout must be greater than zero."
+        )
+
+    if dry_run:
+        return SlackSendResult(
+            notification_type=(
+                payload.notification_type
+            ),
+            title=payload.title,
+            dry_run=True,
+            would_send=True,
+            sent=False,
+            destination=destination,
+            external_request_performed=False,
+            performs_write=False,
+        )
+
+    webhook_url = _get_slack_webhook_url()
+
+    _validate_slack_webhook_url(
+        webhook_url,
+    )
+
+    message = _build_slack_message(
+        payload=payload,
         destination=destination,
+    )
+
+    _post_slack_webhook(
+        webhook_url=webhook_url,
+        message=message,
+        timeout_seconds=timeout_seconds,
+    )
+
+    return SlackSendResult(
+        notification_type=(
+            payload.notification_type
+        ),
+        title=payload.title,
+        dry_run=False,
+        would_send=True,
+        sent=True,
+        destination=destination,
+        external_request_performed=True,
         performs_write=False,
     )
