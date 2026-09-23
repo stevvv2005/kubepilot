@@ -4,6 +4,9 @@ from typing import Any, Protocol
 from agent.llm.bedrock_client import (
     BedrockRequest,
 )
+from agent.llm.bedrock_execution_gateway import (
+    BedrockExecutionGatewayResult,
+)
 from agent.llm.client import (
     LLMResponse,
 )
@@ -42,9 +45,8 @@ class BedrockRuntimeAdapter:
     The adapter itself does not create AWS credentials,
     sessions, or boto3 clients.
 
-    Tests can inject a deterministic fake client.
-
-    Real AWS wiring will be added separately.
+    A BedrockExecutionGatewayResult is required before
+    any runtime invocation can happen.
     """
 
     def __init__(
@@ -63,11 +65,35 @@ class BedrockRuntimeAdapter:
         *,
         prompt: LLMPrompt,
         request: BedrockRequest,
+        gateway: BedrockExecutionGatewayResult,
     ) -> BedrockRuntimeResult:
         self._validate(
             prompt=prompt,
             request=request,
         )
+
+        if not gateway.allowed:
+            raise ValueError(
+                "Bedrock execution gateway rejected "
+                "the invocation."
+            )
+
+        if not gateway.ready_to_invoke:
+            raise ValueError(
+                "Bedrock execution gateway is not "
+                "ready to invoke."
+            )
+
+        if not gateway.external_request_allowed:
+            raise ValueError(
+                "External Bedrock request is not allowed."
+            )
+
+        if request.dry_run:
+            raise ValueError(
+                "Dry-run Bedrock requests cannot "
+                "invoke the runtime."
+            )
 
         runtime_response = (
             self._runtime_client.converse(

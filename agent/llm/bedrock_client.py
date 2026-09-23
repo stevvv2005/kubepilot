@@ -48,12 +48,13 @@ class BedrockLLMClient:
     """
     Safe Bedrock client preparation layer.
 
-    This version supports dry-run only.
+    The client can build both dry-run and live candidate
+    requests.
 
-    It validates the LLM prompt and builds the
-    Bedrock request that would be sent later.
+    The generate() method remains dry-run only.
 
-    No AWS network request is performed.
+    Live execution must go through the execution gateway
+    and Bedrock runtime adapter.
     """
 
     provider = "aws-bedrock"
@@ -131,21 +132,19 @@ class BedrockLLMClient:
         dry_run: bool = True,
     ) -> BedrockRequest:
         """
-        Build a safe Bedrock request.
+        Build a Bedrock request.
 
-        Real execution is intentionally disabled
-        in this implementation.
+        This method never performs an AWS request.
+
+        dry_run=True creates a preview request.
+
+        dry_run=False creates a live candidate request
+        that must still pass through the execution gateway.
         """
 
         self._validate_prompt(
             prompt
         )
-
-        if not dry_run:
-            raise ValueError(
-                "Real Bedrock invocation is disabled. "
-                "Use dry_run=True."
-            )
 
         return BedrockRequest(
             region=self.region,
@@ -158,7 +157,7 @@ class BedrockLLMClient:
             ),
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            dry_run=True,
+            dry_run=dry_run,
             performs_write=False,
         )
 
@@ -171,12 +170,26 @@ class BedrockLLMClient:
         """
         Prepare a Bedrock invocation in dry-run mode.
 
-        No AWS API call is performed.
+        This method never performs a real AWS request.
+
+        Live Bedrock execution must go through:
+        - build_request(dry_run=False)
+        - Bedrock execution gateway
+        - Bedrock runtime adapter
         """
+
+        if not dry_run:
+            raise ValueError(
+                "Real Bedrock invocation is disabled "
+                "through generate(). "
+                "Use build_request(dry_run=False) "
+                "with the execution gateway and "
+                "runtime adapter."
+            )
 
         request = self.build_request(
             prompt,
-            dry_run=dry_run,
+            dry_run=True,
         )
 
         content = (

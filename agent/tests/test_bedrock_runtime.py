@@ -5,6 +5,9 @@ import pytest
 from agent.llm.bedrock_client import (
     BedrockLLMClient,
 )
+from agent.llm.bedrock_execution_gateway import (
+    validate_bedrock_execution,
+)
 from agent.llm.bedrock_runtime import (
     BedrockRuntimeAdapter,
 )
@@ -103,7 +106,30 @@ def _request():
 
     return client.build_request(
         _prompt(),
-        dry_run=True,
+        dry_run=False,
+    )
+
+
+def _gateway(
+    prompt=None,
+    request=None,
+):
+    resolved_prompt = (
+        prompt
+        if prompt is not None
+        else _prompt()
+    )
+
+    resolved_request = (
+        request
+        if request is not None
+        else _request()
+    )
+
+    return validate_bedrock_execution(
+        prompt=resolved_prompt,
+        request=resolved_request,
+        live_authorized=True,
     )
 
 
@@ -115,9 +141,16 @@ def test_runtime_adapter_invokes_injected_client():
         external_request_performed=False,
     )
 
+    prompt = _prompt()
+    request = _request()
+
     result = adapter.invoke(
-        prompt=_prompt(),
-        request=_request(),
+        prompt=prompt,
+        request=request,
+        gateway=_gateway(
+            prompt=prompt,
+            request=request,
+        ),
     )
 
     assert result.runtime_invoked is True
@@ -137,9 +170,16 @@ def test_runtime_request_shape():
         runtime_client=fake,
     )
 
+    prompt = _prompt()
+    request = _request()
+
     adapter.invoke(
-        prompt=_prompt(),
-        request=_request(),
+        prompt=prompt,
+        request=request,
+        gateway=_gateway(
+            prompt=prompt,
+            request=request,
+        ),
     )
 
     call = fake.calls[0]
@@ -151,7 +191,7 @@ def test_runtime_request_shape():
 
     assert (
         call["system"][0]["text"]
-        == _prompt().system_prompt
+        == prompt.system_prompt
     )
 
     assert (
@@ -163,7 +203,7 @@ def test_runtime_request_shape():
         call["messages"][0]
         ["content"][0]
         ["text"]
-        == _prompt().user_prompt
+        == prompt.user_prompt
     )
 
     assert (
@@ -182,11 +222,18 @@ def test_runtime_request_shape():
 def test_runtime_response_is_parsed():
     fake = FakeBedrockRuntimeClient()
 
+    prompt = _prompt()
+    request = _request()
+
     result = BedrockRuntimeAdapter(
         runtime_client=fake,
     ).invoke(
-        prompt=_prompt(),
-        request=_request(),
+        prompt=prompt,
+        request=request,
+        gateway=_gateway(
+            prompt=prompt,
+            request=request,
+        ),
     )
 
     response = result.response
@@ -229,11 +276,18 @@ def test_runtime_response_is_parsed():
 def test_runtime_usage_is_exposed():
     fake = FakeBedrockRuntimeClient()
 
+    prompt = _prompt()
+    request = _request()
+
     result = BedrockRuntimeAdapter(
         runtime_client=fake,
     ).invoke(
-        prompt=_prompt(),
-        request=_request(),
+        prompt=prompt,
+        request=request,
+        gateway=_gateway(
+            prompt=prompt,
+            request=request,
+        ),
     )
 
     assert result.input_tokens == 120
@@ -248,12 +302,19 @@ def test_runtime_usage_is_exposed():
 def test_external_request_flag_can_be_enabled():
     fake = FakeBedrockRuntimeClient()
 
+    prompt = _prompt()
+    request = _request()
+
     result = BedrockRuntimeAdapter(
         runtime_client=fake,
         external_request_performed=True,
     ).invoke(
-        prompt=_prompt(),
-        request=_request(),
+        prompt=prompt,
+        request=request,
+        gateway=_gateway(
+            prompt=prompt,
+            request=request,
+        ),
     )
 
     assert (
@@ -274,6 +335,8 @@ def test_prompt_write_is_rejected():
         performs_write=True,
     )
 
+    request = _request()
+
     adapter = BedrockRuntimeAdapter(
         runtime_client=(
             FakeBedrockRuntimeClient()
@@ -286,7 +349,10 @@ def test_prompt_write_is_rejected():
     ):
         adapter.invoke(
             prompt=prompt,
-            request=_request(),
+            request=request,
+            gateway=_gateway(
+                request=request,
+            ),
         )
 
 
@@ -295,6 +361,8 @@ def test_direct_cluster_write_is_rejected():
         _prompt(),
         allows_direct_cluster_write=True,
     )
+
+    request = _request()
 
     adapter = BedrockRuntimeAdapter(
         runtime_client=(
@@ -311,11 +379,16 @@ def test_direct_cluster_write_is_rejected():
     ):
         adapter.invoke(
             prompt=prompt,
-            request=_request(),
+            request=request,
+            gateway=_gateway(
+                request=request,
+            ),
         )
 
 
 def test_request_write_is_rejected():
+    prompt = _prompt()
+
     request = replace(
         _request(),
         performs_write=True,
@@ -335,8 +408,9 @@ def test_request_write_is_rejected():
         ),
     ):
         adapter.invoke(
-            prompt=_prompt(),
+            prompt=prompt,
             request=request,
+            gateway=_gateway(),
         )
 
 
@@ -350,6 +424,9 @@ def test_invalid_runtime_response_is_rejected():
                 "output": {}
             }
 
+    prompt = _prompt()
+    request = _request()
+
     adapter = BedrockRuntimeAdapter(
         runtime_client=InvalidClient(),
     )
@@ -361,8 +438,12 @@ def test_invalid_runtime_response_is_rejected():
         ),
     ):
         adapter.invoke(
-            prompt=_prompt(),
-            request=_request(),
+            prompt=prompt,
+            request=request,
+            gateway=_gateway(
+                prompt=prompt,
+                request=request,
+            ),
         )
 
 
@@ -384,6 +465,9 @@ def test_empty_runtime_text_is_rejected():
                 }
             }
 
+    prompt = _prompt()
+    request = _request()
+
     adapter = BedrockRuntimeAdapter(
         runtime_client=EmptyClient(),
     )
@@ -393,6 +477,76 @@ def test_empty_runtime_text_is_rejected():
         match="contains no text",
     ):
         adapter.invoke(
-            prompt=_prompt(),
-            request=_request(),
+            prompt=prompt,
+            request=request,
+            gateway=_gateway(
+                prompt=prompt,
+                request=request,
+            ),
         )
+
+
+def test_runtime_rejects_dry_run_request():
+    fake = FakeBedrockRuntimeClient()
+
+    client = BedrockLLMClient(
+        model_id=MODEL_ID,
+    )
+
+    prompt = _prompt()
+
+    request = client.build_request(
+        prompt,
+        dry_run=True,
+    )
+
+    gateway = validate_bedrock_execution(
+        prompt=prompt,
+        request=request,
+        live_authorized=True,
+    )
+
+    adapter = BedrockRuntimeAdapter(
+        runtime_client=fake,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="gateway rejected",
+    ):
+        adapter.invoke(
+            prompt=prompt,
+            request=request,
+            gateway=gateway,
+        )
+
+    assert len(fake.calls) == 0
+
+
+def test_runtime_rejects_unauthorized_gateway():
+    fake = FakeBedrockRuntimeClient()
+
+    prompt = _prompt()
+    request = _request()
+
+    gateway = validate_bedrock_execution(
+        prompt=prompt,
+        request=request,
+        live_authorized=False,
+    )
+
+    adapter = BedrockRuntimeAdapter(
+        runtime_client=fake,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="gateway rejected",
+    ):
+        adapter.invoke(
+            prompt=prompt,
+            request=request,
+            gateway=gateway,
+        )
+
+    assert len(fake.calls) == 0
