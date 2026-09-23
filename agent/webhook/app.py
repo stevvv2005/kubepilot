@@ -26,14 +26,46 @@ from agent.sre_agent.pr_payload import build_pr_payload
 from agent.sre_agent.remediation import build_remediation_proposal
 from agent.sre_agent.reviewed_patch import build_reviewed_patch_payload
 from agent.sre_agent.target_file_resolver import resolve_target_file
-
+from agent.finops_agent.approved_manifest import (
+    render_approved_finops_manifest,
+)
+from agent.finops_agent.git_commit_dry_run import (
+    build_finops_git_commit_dry_run,
+)
+from agent.finops_agent.git_execution_gateway import (
+    validate_finops_git_execution,
+)
+from agent.finops_agent.git_execution_request import (
+    build_finops_git_execution_request,
+)
+from agent.finops_agent.git_executor import (
+    execute_finops_git_request,
+)
+from agent.finops_agent.human_approval import (
+    FinOpsApprovalDecision,
+    apply_finops_approval,
+)
+from agent.finops_agent.live_gitops_pipeline import (
+    generate_live_gitops_pipeline,
+)
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
     version="1.8.0",
 )
 
+class FinOpsApprovalRequest(BaseModel):
+    namespace: str
+    workload_name: str
+    window: str = "1h"
 
+    approved: bool
+
+    approved_cpu_request: Optional[str] = None
+    approved_memory_request: Optional[str] = None
+
+    reviewer: str
+    reason: str
 class Alert(BaseModel):
     status: str
     labels: Dict[str, str] = Field(default_factory=dict)
@@ -209,7 +241,305 @@ def get_finops_rightsizing(
             for proposal in result.proposals
         ],
     }
+@app.post("/finops/approvals")
+def approve_finops_change(
+    request: FinOpsApprovalRequest,
+) -> dict:
+    """
+    Review a live FinOps GitOps diff and build the complete
+    approved Git dry-run pipeline.
 
+    Real Git execution remains disabled.
+    """
+
+    client = OpenCostClient()
+
+    try:
+        pipeline = generate_live_gitops_pipeline(
+            client=client,
+            window=request.window,
+            namespace=request.namespace,
+            repository_root=".",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Unable to generate live FinOps GitOps pipeline: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        ) from exc
+
+    matching_diff = next(
+        (
+            diff
+            for diff in pipeline.diffs
+            if (
+                diff.workload_name
+                == request.workload_name
+                or diff.manifest_name
+                == request.workload_name
+            )
+        ),
+        None,
+    )
+
+    if matching_diff is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No live FinOps GitOps diff was found "
+                "for the requested workload."
+            ),
+        )
+
+    decision = FinOpsApprovalDecision(
+        approved=request.approved,
+        approved_cpu_request=(
+            request.approved_cpu_request
+        ),
+        approved_memory_request=(
+            request.approved_memory_request
+        ),
+        reviewer=request.reviewer,
+        reason=request.reason,
+    )
+
+    try:
+        approved_change = apply_finops_approval(
+            diff=matching_diff,
+            decision=decision,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    approved_manifest = None
+    commit_plan = None
+    execution_gateway = None
+    execution_request = None
+    execution_result = None
+
+    if approved_change.ready_for_render:
+        try:
+            approved_manifest = (
+                render_approved_finops_manifest(
+                    approved_change=approved_change,
+                    repository_root=".",
+                )
+            )
+
+            commit_plan = (
+                build_finops_git_commit_dry_run(
+                    approved_manifest
+                )
+            )
+
+            execution_gateway = (
+                validate_finops_git_execution(
+                    commit_plan
+                )
+            )
+
+            if (
+                execution_gateway.allowed
+                and execution_gateway.ready_to_execute
+            ):
+                execution_request = (
+                    build_finops_git_execution_request(
+                        commit_plan=commit_plan,
+                        gateway=execution_gateway,
+                        repository="stevvv2005/kubepilot",
+                        base_branch="main",
+                    )
+                )
+
+                execution_result = (
+                    execute_finops_git_request(
+                        request=execution_request,
+                        dry_run=True,
+                    )
+                )
+
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=str(exc),
+            ) from exc
+
+    return {
+        "pipeline": {
+            "source": pipeline.source,
+            "namespace": pipeline.namespace_filter,
+            "total_workloads": pipeline.total_workloads,
+            "waste_candidates": pipeline.waste_candidates,
+            "resolved_targets": pipeline.resolved_targets,
+            "gitops_diffs": pipeline.gitops_diffs,
+            "read_only": pipeline.read_only,
+            "performs_write": pipeline.performs_write,
+        },
+
+        "gitops_diff": {
+            "workload_name": matching_diff.workload_name,
+            "target_file": matching_diff.target_file,
+            "manifest_kind": matching_diff.manifest_kind,
+            "manifest_name": matching_diff.manifest_name,
+            "container_name": matching_diff.container_name,
+            "current_cpu_request": (
+                matching_diff.current_cpu_request
+            ),
+            "proposed_cpu_request": (
+                matching_diff.proposed_cpu_request
+            ),
+            "current_memory_request": (
+                matching_diff.current_memory_request
+            ),
+            "proposed_memory_request": (
+                matching_diff.proposed_memory_request
+            ),
+            "estimated_monthly_savings_usd": (
+                matching_diff.estimated_monthly_savings_usd
+            ),
+            "requires_human_approval": (
+                matching_diff.requires_human_approval
+            ),
+            "writes_file": matching_diff.writes_file,
+            "writes_git": matching_diff.writes_git,
+            "auto_apply": matching_diff.auto_apply,
+        },
+
+        "approval": {
+            "approved": approved_change.approved,
+            "reviewer": approved_change.reviewer,
+            "reason": approved_change.reason,
+            "approved_cpu_request": (
+                approved_change.approved_cpu_request
+            ),
+            "approved_memory_request": (
+                approved_change.approved_memory_request
+            ),
+            "ready_for_render": (
+                approved_change.ready_for_render
+            ),
+            "writes_file": approved_change.writes_file,
+            "writes_git": approved_change.writes_git,
+            "auto_apply": approved_change.auto_apply,
+        },
+
+        "approved_manifest": (
+            {
+                "target_file": approved_manifest.target_file,
+                "manifest_kind": approved_manifest.manifest_kind,
+                "manifest_name": approved_manifest.manifest_name,
+                "container_name": approved_manifest.container_name,
+                "approved_cpu_request": (
+                    approved_manifest.approved_cpu_request
+                ),
+                "approved_memory_request": (
+                    approved_manifest.approved_memory_request
+                ),
+                "rendered_yaml": (
+                    approved_manifest.rendered_yaml
+                ),
+                "ready_for_commit": (
+                    approved_manifest.ready_for_commit
+                ),
+                "writes_file": approved_manifest.writes_file,
+                "writes_git": approved_manifest.writes_git,
+            }
+            if approved_manifest is not None
+            else None
+        ),
+
+        "git_commit_dry_run": (
+            {
+                "target_file": commit_plan.target_file,
+                "branch_name": commit_plan.branch_name,
+                "commit_message": commit_plan.commit_message,
+                "rendered_yaml": commit_plan.rendered_yaml,
+                "ready_to_commit": commit_plan.ready_to_commit,
+                "performs_write": commit_plan.performs_write,
+                "writes_file": commit_plan.writes_file,
+                "writes_git": commit_plan.writes_git,
+            }
+            if commit_plan is not None
+            else None
+        ),
+
+        "git_execution_gateway": (
+            {
+                "allowed": execution_gateway.allowed,
+                "reason": execution_gateway.reason,
+                "ready_to_execute": (
+                    execution_gateway.ready_to_execute
+                ),
+                "performs_write": (
+                    execution_gateway.performs_write
+                ),
+            }
+            if execution_gateway is not None
+            else None
+        ),
+
+        "git_execution_request": (
+            {
+                "repository": execution_request.repository,
+                "base_branch": execution_request.base_branch,
+                "head_branch": execution_request.head_branch,
+                "target_file": execution_request.target_file,
+                "commit_message": execution_request.commit_message,
+                "pr_title": execution_request.pr_title,
+                "pr_body": execution_request.pr_body,
+                "create_branch": execution_request.create_branch,
+                "write_file": execution_request.write_file,
+                "create_commit": execution_request.create_commit,
+                "push_branch": execution_request.push_branch,
+                "create_pr": execution_request.create_pr,
+                "authorized": execution_request.authorized,
+                "performs_write": (
+                    execution_request.performs_write
+                ),
+            }
+            if execution_request is not None
+            else None
+        ),
+
+        "git_execution_result": (
+            {
+                "repository": execution_result.repository,
+                "base_branch": execution_result.base_branch,
+                "head_branch": execution_result.head_branch,
+                "target_file": execution_result.target_file,
+                "commit_message": (
+                    execution_result.commit_message
+                ),
+                "dry_run": execution_result.dry_run,
+                "would_create_branch": (
+                    execution_result.would_create_branch
+                ),
+                "would_write_file": (
+                    execution_result.would_write_file
+                ),
+                "would_create_commit": (
+                    execution_result.would_create_commit
+                ),
+                "would_push_branch": (
+                    execution_result.would_push_branch
+                ),
+                "would_create_pr": (
+                    execution_result.would_create_pr
+                ),
+                "executed": execution_result.executed,
+                "performs_write": (
+                    execution_result.performs_write
+                ),
+            }
+            if execution_result is not None
+            else None
+        ),
+    }
 @app.post("/alerts")
 def receive_alerts(payload: AlertmanagerPayload) -> dict:
     if not payload.alerts:
