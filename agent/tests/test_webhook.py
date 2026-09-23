@@ -91,7 +91,52 @@ def test_receive_alert(mock_analyze_pod):
     # Metrics
     assert body["metrics"]["memory_mib"] == 128.0
     assert body["metrics"]["cpu_millicores"] == 25.0
+        # LLM analysis
+    assert body["llm_status"]["available"] is True
 
+    assert (
+        body["llm_status"]["error"]
+        is None
+    )
+
+    assert (
+        body["llm_status"]["non_blocking"]
+        is True
+    )
+
+    assert (
+        body["llm_analysis"]["provider"]
+        == "mock"
+    )
+
+    assert (
+        body["llm_analysis"]["model"]
+        == "kubepilot-mock-v1"
+    )
+
+    assert (
+        body["llm_analysis"]
+        ["requires_human_approval"]
+        is True
+    )
+
+    assert (
+        body["llm_analysis"]
+        ["allows_direct_cluster_write"]
+        is False
+    )
+
+    assert (
+        body["llm_analysis"]
+        ["external_request_performed"]
+        is False
+    )
+
+    assert (
+        body["llm_analysis"]
+        ["performs_write"]
+        is False
+    )
     # Remediation
     assert body["remediation"]["incident_type"] == "Healthy"
     assert body["remediation"]["target_file"] is None
@@ -193,4 +238,90 @@ def test_receive_alert_without_alerts():
     assert response.status_code == 400
     assert response.json()["detail"] == (
         "Alertmanager payload contains no alerts"
+    )
+@patch(
+    "agent.webhook.app.run_llm_workflow"
+)
+@patch(
+    "agent.webhook.app.analyze_pod"
+)
+def test_llm_failure_does_not_block_alert_pipeline(
+    mock_analyze_pod,
+    mock_llm_workflow,
+):
+    mock_analyze_pod.return_value = (
+        SimpleNamespace(
+            namespace="default",
+            pod_name="frontend",
+            container_name="server",
+            diagnosis=SimpleNamespace(
+                incident_type="Healthy",
+                root_cause=(
+                    "No known incident detected."
+                ),
+                recommendation=(
+                    "Continue monitoring."
+                ),
+                confidence="high",
+            ),
+            memory_mib=128.0,
+            cpu_millicores=25.0,
+        )
+    )
+
+    mock_llm_workflow.side_effect = (
+        RuntimeError(
+            "Simulated LLM failure"
+        )
+    )
+
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": (
+                        "KubePilotPodIncident"
+                    ),
+                    "namespace": "default",
+                    "pod": "frontend",
+                    "container": "server",
+                    "severity": "warning",
+                },
+                "annotations": {
+                    "summary": "Test alert",
+                },
+            }
+        ],
+    }
+
+    response = client.post(
+        "/alerts",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["diagnosis"][
+        "incident_type"
+    ] == "Healthy"
+
+    assert body["llm_analysis"] is None
+
+    assert (
+        body["llm_status"]["available"]
+        is False
+    )
+
+    assert (
+        "Simulated LLM failure"
+        in body["llm_status"]["error"]
+    )
+
+    assert (
+        body["llm_status"]["non_blocking"]
+        is True
     )
