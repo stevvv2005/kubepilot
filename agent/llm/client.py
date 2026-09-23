@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Protocol
-
+import json
 from agent.llm.prompt_builder import (
     LLMPrompt,
 )
@@ -75,15 +75,35 @@ class MockLLMClient:
                 "LLM user prompt is required."
             )
 
-        content = (
-            "KubePilot mock analysis.\n\n"
-            "The supplied signal was analyzed using the "
-            "available prompt and RAG context.\n\n"
-            "Recommendation:\n"
-            "- Review the available evidence.\n"
-            "- Prepare any configuration change through GitOps.\n"
-            "- Require human approval before proceeding.\n"
-            "- Do not modify the live Kubernetes cluster directly."
+        content = json.dumps(
+            {
+                "summary": (
+                    "KubePilot mock analysis of the "
+                    "supplied SRE or FinOps signal."
+                ),
+                "evidence": [
+                    (
+                        "The analysis uses the supplied "
+                        "prompt and available RAG context."
+                    ),
+                    (
+                        "No direct Kubernetes mutation "
+                        "is permitted."
+                    ),
+                ],
+                "recommendation": (
+                    "Review the available evidence and "
+                    "prepare any configuration change "
+                    "through GitOps with human approval."
+                ),
+                "uncertainty": (
+                    "This is a deterministic mock response "
+                    "and does not represent a real model "
+                    "inference."
+                ),
+                "requires_human_approval": True,
+                "allows_direct_cluster_write": False,
+            }
         )
 
         return LLMResponse(
