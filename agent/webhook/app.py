@@ -10,6 +10,7 @@ from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.git_commit_dry_run import build_git_commit_dry_run
 from agent.sre_agent.git_execution_gateway import validate_git_execution
 from agent.sre_agent.git_execution_request import build_git_execution_request
+from agent.sre_agent.git_executor import execute_git_request
 from agent.sre_agent.github_pr import validate_pr_payload_for_github
 from agent.sre_agent.github_request import build_github_pr_request
 from agent.sre_agent.human_approval import (
@@ -26,7 +27,7 @@ from agent.sre_agent.target_file_resolver import resolve_target_file
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="1.7.0",
+    version="1.8.0",
 )
 
 
@@ -414,6 +415,20 @@ def approve_remediation(request: ApprovalRequest) -> dict:
                 detail=str(exc),
             ) from exc
 
+    git_execution_result = None
+
+    if git_execution_request is not None:
+        try:
+            git_execution_result = execute_git_request(
+                request=git_execution_request,
+                dry_run=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=str(exc),
+            ) from exc
+
     return {
         "approval": {
             "approved": request.approved,
@@ -520,6 +535,32 @@ def approve_remediation(request: ApprovalRequest) -> dict:
                 "performs_write": git_execution_request.performs_write,
             }
             if git_execution_request is not None
+            else None
+        ),
+
+        "git_execution_result": (
+            {
+                "repository": git_execution_result.repository,
+                "base_branch": git_execution_result.base_branch,
+                "head_branch": git_execution_result.head_branch,
+                "target_file": git_execution_result.target_file,
+                "commit_message": git_execution_result.commit_message,
+                "dry_run": git_execution_result.dry_run,
+                "would_create_branch": (
+                    git_execution_result.would_create_branch
+                ),
+                "would_write_file": git_execution_result.would_write_file,
+                "would_create_commit": (
+                    git_execution_result.would_create_commit
+                ),
+                "would_push_branch": (
+                    git_execution_result.would_push_branch
+                ),
+                "would_create_pr": git_execution_result.would_create_pr,
+                "executed": git_execution_result.executed,
+                "performs_write": git_execution_result.performs_write,
+            }
+            if git_execution_result is not None
             else None
         ),
 
