@@ -36,6 +36,18 @@ Safety rules:
 - If the provided context is insufficient, say so explicitly.
 - Do not invent metrics, incidents, costs, or configuration values.
 - Distinguish observed evidence from recommendations.
+- Return the final answer as valid JSON only.
+- Do not wrap the JSON in markdown code fences.
+- The JSON object must contain exactly these fields:
+  summary
+  evidence
+  recommendation
+  uncertainty
+  requires_human_approval
+  allows_direct_cluster_write
+- evidence must be a JSON array of strings.
+- requires_human_approval must always be true.
+- allows_direct_cluster_write must always be false.
 """.strip()
 
 
@@ -95,6 +107,15 @@ def build_llm_prompt(
         "- Do not propose direct Kubernetes mutation.\n"
         "- Any configuration change must require human approval.\n"
         "- Prefer a GitOps-based remediation path."
+        "- Return valid JSON only.\n"
+        "- Do not use markdown code fences.\n"
+        "- Use exactly these fields: summary, evidence, "
+        "recommendation, uncertainty, "
+        "requires_human_approval, "
+        "allows_direct_cluster_write.\n"
+        "- evidence must be a list of strings.\n"
+        "- requires_human_approval must be true.\n"
+        "- allows_direct_cluster_write must be false."
     )
 
     return LLMPrompt(

@@ -21,11 +21,16 @@ from agent.llm.provider_selector import (
     LLMProviderSelection,
     generate_with_selected_provider,
 )
+from agent.llm.output_validator import (
+    StructuredLLMOutput,
+    validate_llm_output,
+)
 
 @dataclass(frozen=True)
 class LLMWorkflowResult:
     signal_type: str
     query: str
+    
 
     namespace: str | None
     workload_name: str | None
@@ -33,6 +38,7 @@ class LLMWorkflowResult:
     rag_context: RAGContext
     prompt: LLMPrompt
     response: LLMResponse
+    structured_output: StructuredLLMOutput
 
     requires_human_approval: bool
     allows_direct_cluster_write: bool
@@ -172,7 +178,10 @@ def run_llm_workflow(
         raise ValueError(
             "LLM response must require human approval."
         )
-
+    
+    structured_output = validate_llm_output(
+        response.content
+    )
     return LLMWorkflowResult(
         signal_type=normalized_signal_type,
         query=normalized_query,
@@ -187,4 +196,5 @@ def run_llm_workflow(
             response.external_request_performed
         ),
         performs_write=False,
+        structured_output=structured_output,
     )

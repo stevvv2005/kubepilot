@@ -87,8 +87,8 @@ def test_sre_llm_workflow():
     )
 
     assert (
-        "GitOps"
-        in result.response.content
+    "GitOps"
+    in result.structured_output.recommendation
     )
 
     assert (
@@ -121,7 +121,23 @@ def test_finops_llm_workflow():
         workload_name="checkoutservice",
         knowledge_base=_knowledge_base(),
     )
+    assert (
+    result.structured_output
+    .requires_human_approval
+    is True
+    )
 
+    assert (
+    result.structured_output
+    .allows_direct_cluster_write
+    is False
+    )
+
+    assert (
+    result.structured_output
+    .performs_write
+    is False
+    )
     assert (
         result.signal_type
         == "finops"
