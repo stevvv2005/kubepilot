@@ -374,6 +374,96 @@ def get_finops_rightsizing(
                 f"proposals from OpenCost: {exc}"
             ),
         ) from exc
+    llm_analysis = None
+    llm_error = None
+
+    if result.proposals:
+        proposal_summaries = []
+
+        for proposal in result.proposals[:3]:
+            proposal_summaries.append(
+                (
+                    f"Workload: {proposal.workload_name}; "
+                    f"Namespace: {proposal.namespace}; "
+                    f"CPU utilization: "
+                    f"{proposal.cpu_utilization_pct}%; "
+                    f"Memory utilization: "
+                    f"{proposal.memory_utilization_pct}%; "
+                    f"Current CPU request: "
+                    f"{proposal.current_cpu_request_cores}; "
+                    f"Suggested CPU request: "
+                    f"{proposal.suggested_cpu_request_cores}; "
+                    f"Current memory request: "
+                    f"{proposal.current_memory_request_mib} MiB; "
+                    f"Suggested memory request: "
+                    f"{proposal.suggested_memory_request_mib} MiB; "
+                    f"Estimated monthly savings: "
+                    f"${proposal.estimated_monthly_savings_usd}."
+                )
+            )
+
+        llm_query = (
+            "Review these Kubernetes FinOps rightsizing "
+            "proposals and explain the optimization "
+            "opportunity using the available FinOps "
+            "runbook context. Do not invent metrics. "
+            "Keep every change advisory and require "
+            "human approval.\n\n"
+            + "\n".join(proposal_summaries)
+        )
+
+        try:
+            provider_selection = (
+                get_provider_selection()
+            )
+
+            llm_result = run_llm_workflow(
+                provider_selection=provider_selection,
+                query=llm_query,
+                signal_type="finops_rightsizing",
+                namespace=namespace,
+                repository_root=".",
+            )
+
+            llm_analysis = {
+                "provider": (
+                    llm_result.response.provider
+                ),
+                "model": (
+                    llm_result.response.model
+                ),
+                "analysis": (
+                    llm_result.response.content
+                ),
+                "rag_context_used": (
+                    llm_result
+                    .response
+                    .rag_context_used
+                ),
+                "sources": list(
+                    llm_result.response.sources
+                ),
+                "requires_human_approval": (
+                    llm_result
+                    .requires_human_approval
+                ),
+                "allows_direct_cluster_write": (
+                    llm_result
+                    .allows_direct_cluster_write
+                ),
+                "external_request_performed": (
+                    llm_result
+                    .external_request_performed
+                ),
+                "performs_write": (
+                    llm_result.performs_write
+                ),
+            }
+
+        except Exception as exc:
+            llm_error = (
+                f"{type(exc).__name__}: {exc}"
+            )
 
     return {
         "source": result.source,
@@ -392,6 +482,15 @@ def get_finops_rightsizing(
             result.requires_human_approval
         ),
         "auto_apply": result.auto_apply,
+                "llm_analysis": llm_analysis,
+
+        "llm_status": {
+            "available": (
+                llm_analysis is not None
+            ),
+            "error": llm_error,
+            "non_blocking": True,
+        },
         "proposals": [
             {
                 "namespace": proposal.namespace,

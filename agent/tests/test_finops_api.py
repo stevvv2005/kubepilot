@@ -4,7 +4,14 @@ import agent.webhook.app as webhook_app
 from agent.finops_agent.cost_analysis import FinOpsAnalysis
 from agent.finops_agent.finops_report import FinOpsReport
 from agent.finops_agent.live_report import LiveFinOpsReport
+from types import SimpleNamespace
 
+from agent.finops_agent.live_rightsizing import (
+    LiveRightsizingResult,
+)
+from agent.finops_agent.rightsizing_proposal import (
+    RightsizingProposal,
+)
 
 client = TestClient(webhook_app.app)
 
@@ -198,4 +205,285 @@ def test_finops_report_endpoint_returns_503(
     assert (
         "OpenCost unavailable"
         in body["detail"]
+    )
+def _fake_rightsizing_result():
+    proposal = RightsizingProposal(
+        namespace="default",
+        workload_name="checkoutservice",
+        workload_type="Deployment",
+        current_cpu_request_cores=0.5,
+        current_memory_request_mib=512.0,
+        suggested_cpu_request_cores=0.2,
+        suggested_memory_request_mib=256.0,
+        cpu_utilization_pct=10.0,
+        memory_utilization_pct=20.0,
+        current_monthly_cost_usd=20.0,
+        estimated_monthly_savings_usd=5.0,
+        reason=(
+            "Workload is underutilized."
+        ),
+        confidence="medium",
+        requires_human_approval=True,
+        auto_apply=False,
+        performs_write=False,
+    )
+
+    return LiveRightsizingResult(
+        source="opencost",
+        namespace_filter="default",
+        total_workloads=1,
+        waste_candidates=1,
+        proposals=(proposal,),
+        read_only=True,
+        performs_write=False,
+        requires_human_approval=True,
+        auto_apply=False,
+    )
+
+
+def test_finops_rightsizing_includes_llm_analysis(
+    monkeypatch,
+):
+    fake_result = _fake_rightsizing_result()
+
+    def fake_generate_live_rightsizing(
+        client,
+        window="1h",
+        namespace=None,
+    ):
+        return fake_result
+
+    fake_llm_result = SimpleNamespace(
+        response=SimpleNamespace(
+            provider="mock",
+            model="kubepilot-mock-v1",
+            content=(
+                "FinOps mock analysis with "
+                "GitOps recommendation."
+            ),
+            rag_context_used=True,
+            sources=(
+                "agent/knowledge/"
+                "finops_runbooks.md",
+            ),
+        ),
+        requires_human_approval=True,
+        allows_direct_cluster_write=False,
+        external_request_performed=False,
+        performs_write=False,
+    )
+
+    def fake_run_llm_workflow(
+        **kwargs,
+    ):
+        return fake_llm_result
+
+    monkeypatch.setattr(
+        webhook_app,
+        "generate_live_rightsizing",
+        fake_generate_live_rightsizing,
+    )
+
+    monkeypatch.setattr(
+        webhook_app,
+        "run_llm_workflow",
+        fake_run_llm_workflow,
+    )
+
+    response = client.get(
+        "/finops/rightsizing",
+        params={
+            "namespace": "default",
+            "window": "1h",
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["source"] == "opencost"
+    assert body["waste_candidates"] == 1
+
+    assert (
+        body["llm_status"]["available"]
+        is True
+    )
+
+    assert body["llm_status"]["error"] is None
+
+    assert (
+        body["llm_status"]["non_blocking"]
+        is True
+    )
+
+    assert (
+        body["llm_analysis"]["provider"]
+        == "mock"
+    )
+
+    assert (
+        body["llm_analysis"]["model"]
+        == "kubepilot-mock-v1"
+    )
+
+    assert (
+        body["llm_analysis"]
+        ["requires_human_approval"]
+        is True
+    )
+
+    assert (
+        body["llm_analysis"]
+        ["allows_direct_cluster_write"]
+        is False
+    )
+
+    assert (
+        body["llm_analysis"]
+        ["external_request_performed"]
+        is False
+    )
+
+    assert (
+        body["llm_analysis"]
+        ["performs_write"]
+        is False
+    )
+
+    assert len(body["proposals"]) == 1
+
+
+def test_finops_rightsizing_llm_failure_is_non_blocking(
+    monkeypatch,
+):
+    fake_result = _fake_rightsizing_result()
+
+    def fake_generate_live_rightsizing(
+        client,
+        window="1h",
+        namespace=None,
+    ):
+        return fake_result
+
+    def fake_run_llm_workflow(
+        **kwargs,
+    ):
+        raise RuntimeError(
+            "Simulated FinOps LLM failure"
+        )
+
+    monkeypatch.setattr(
+        webhook_app,
+        "generate_live_rightsizing",
+        fake_generate_live_rightsizing,
+    )
+
+    monkeypatch.setattr(
+        webhook_app,
+        "run_llm_workflow",
+        fake_run_llm_workflow,
+    )
+
+    response = client.get(
+        "/finops/rightsizing",
+        params={
+            "namespace": "default",
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["waste_candidates"] == 1
+
+    assert body["llm_analysis"] is None
+
+    assert (
+        body["llm_status"]["available"]
+        is False
+    )
+
+    assert (
+        "Simulated FinOps LLM failure"
+        in body["llm_status"]["error"]
+    )
+
+    assert (
+        body["llm_status"]["non_blocking"]
+        is True
+    )
+
+    assert len(body["proposals"]) == 1
+
+
+def test_finops_rightsizing_without_proposals_skips_llm(
+    monkeypatch,
+):
+    fake_result = LiveRightsizingResult(
+        source="opencost",
+        namespace_filter="default",
+        total_workloads=1,
+        waste_candidates=0,
+        proposals=tuple(),
+        read_only=True,
+        performs_write=False,
+        requires_human_approval=True,
+        auto_apply=False,
+    )
+
+    def fake_generate_live_rightsizing(
+        client,
+        window="1h",
+        namespace=None,
+    ):
+        return fake_result
+
+    def fail_if_called(
+        **kwargs,
+    ):
+        raise AssertionError(
+            "LLM workflow should not be called "
+            "when there are no proposals."
+        )
+
+    monkeypatch.setattr(
+        webhook_app,
+        "generate_live_rightsizing",
+        fake_generate_live_rightsizing,
+    )
+
+    monkeypatch.setattr(
+        webhook_app,
+        "run_llm_workflow",
+        fail_if_called,
+    )
+
+    response = client.get(
+        "/finops/rightsizing",
+        params={
+            "namespace": "default",
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["waste_candidates"] == 0
+    assert body["proposals"] == []
+
+    assert body["llm_analysis"] is None
+
+    assert (
+        body["llm_status"]["available"]
+        is False
+    )
+
+    assert body["llm_status"]["error"] is None
+
+    assert (
+        body["llm_status"]["non_blocking"]
+        is True
     )
