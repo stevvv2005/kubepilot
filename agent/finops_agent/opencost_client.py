@@ -52,7 +52,7 @@ class OpenCostClient:
         """
 
         return self._get_json(
-            path="/model/allocation",
+            path="/allocation/compute",
             params={
                 "window": window,
                 "aggregate": aggregate,
@@ -97,11 +97,72 @@ def _extract_allocation_entries(
     return entries
 
 
+def _estimate_monthly_cost(
+    allocation: Dict[str, Any],
+) -> float:
+    """
+    Estimate a 30-day monthly cost from the observed
+    OpenCost allocation window.
+
+    cpuCost and ramCost represent accumulated cost
+    during the allocation's observed duration.
+    """
+
+    cpu_cost = _safe_float(
+        allocation.get(
+            "cpuCost",
+            0.0,
+        )
+    )
+
+    ram_cost = _safe_float(
+        allocation.get(
+            "ramCost",
+            0.0,
+        )
+    )
+
+    observed_cost = (
+        cpu_cost
+        + ram_cost
+    )
+
+    minutes = _safe_float(
+        allocation.get(
+            "minutes",
+            0.0,
+        )
+    )
+
+    if minutes <= 0:
+        return 0.0
+
+    observed_hours = (
+        minutes / 60.0
+    )
+
+    hourly_cost = (
+        observed_cost
+        / observed_hours
+    )
+
+    monthly_cost = (
+        hourly_cost
+        * 24
+        * 30
+    )
+
+    return round(
+        monthly_cost,
+        2,
+    )
+
+
 def allocations_to_snapshots(
     payload: Dict[str, Any],
 ) -> List[WorkloadCostSnapshot]:
     """
-    Convert raw OpenCost allocation data into
+    Convert OpenCost allocation data into
     KubePilot WorkloadCostSnapshot objects.
 
     No write is performed.
@@ -119,7 +180,10 @@ def allocations_to_snapshots(
             {},
         )
 
-        if not isinstance(properties, dict):
+        if not isinstance(
+            properties,
+            dict,
+        ):
             properties = {}
 
         namespace = str(
@@ -130,18 +194,26 @@ def allocations_to_snapshots(
         )
 
         workload_name = (
-            properties.get("controller")
-            or properties.get("pod")
-            or allocation.get("name")
+            properties.get(
+                "controller"
+            )
+            or properties.get(
+                "pod"
+            )
+            or allocation.get(
+                "name"
+            )
             or "unknown"
         )
 
         workload_type = (
-            properties.get("controllerKind")
+            properties.get(
+                "controllerKind"
+            )
             or "Pod"
         )
 
-        cpu_request_core_hours = _safe_float(
+        cpu_request_cores = _safe_float(
             allocation.get(
                 "cpuCoreRequestAverage",
                 0.0,
@@ -157,35 +229,16 @@ def allocations_to_snapshots(
 
         memory_request_bytes = _safe_float(
             allocation.get(
-                "ramBytesRequestAverage",
+                "ramByteRequestAverage",
                 0.0,
             )
         )
 
         memory_usage_bytes = _safe_float(
             allocation.get(
-                "ramBytesUsageAverage",
+                "ramByteUsageAverage",
                 0.0,
             )
-        )
-
-        cpu_cost = _safe_float(
-            allocation.get(
-                "cpuCost",
-                0.0,
-            )
-        )
-
-        ram_cost = _safe_float(
-            allocation.get(
-                "ramCost",
-                0.0,
-            )
-        )
-
-        monthly_cost_usd = round(
-            (cpu_cost + ram_cost) * 24 * 30,
-            2,
         )
 
         memory_request_mib = round(
@@ -202,6 +255,12 @@ def allocations_to_snapshots(
             2,
         )
 
+        monthly_cost_usd = (
+            _estimate_monthly_cost(
+                allocation,
+            )
+        )
+
         snapshots.append(
             WorkloadCostSnapshot(
                 namespace=namespace,
@@ -211,11 +270,21 @@ def allocations_to_snapshots(
                 workload_type=str(
                     workload_type
                 ),
-                cpu_request_cores=cpu_request_core_hours,
-                cpu_usage_cores=cpu_usage_cores,
-                memory_request_mib=memory_request_mib,
-                memory_usage_mib=memory_usage_mib,
-                monthly_cost_usd=monthly_cost_usd,
+                cpu_request_cores=(
+                    cpu_request_cores
+                ),
+                cpu_usage_cores=(
+                    cpu_usage_cores
+                ),
+                memory_request_mib=(
+                    memory_request_mib
+                ),
+                memory_usage_mib=(
+                    memory_usage_mib
+                ),
+                monthly_cost_usd=(
+                    monthly_cost_usd
+                ),
             )
         )
 
