@@ -3,6 +3,9 @@ from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from agent.finops_agent.live_report import generate_live_finops_report
+from agent.finops_agent.opencost_client import OpenCostClient
+
 from agent.sre_agent.analyzer import analyze_pod
 from agent.sre_agent.approved_manifest import render_approved_manifest
 from agent.sre_agent.candidate_value import suggest_candidate_value
@@ -55,6 +58,79 @@ class ApprovalRequest(BaseModel):
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/finops/report")
+def get_finops_report(
+    namespace: Optional[str] = None,
+    window: str = "1h",
+) -> dict:
+    """
+    Return a live read-only FinOps report generated from OpenCost.
+
+    This endpoint does not mutate Kubernetes resources, Git repositories,
+    or cloud infrastructure.
+    """
+
+    client = OpenCostClient()
+
+    try:
+        result = generate_live_finops_report(
+            client=client,
+            window=window,
+            namespace=namespace,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Unable to generate FinOps report "
+                f"from OpenCost: {exc}"
+            ),
+        ) from exc
+
+    report = result.report
+
+    return {
+        "source": result.source,
+        "namespace": result.namespace_filter,
+        "read_only": result.read_only,
+        "performs_write": result.performs_write,
+        "total_workloads": report.total_workloads,
+        "analyzed_workloads": report.analyzed_workloads,
+        "waste_candidates": report.waste_candidates,
+        "total_monthly_cost_usd": report.total_monthly_cost_usd,
+        "estimated_monthly_savings_usd": (
+            report.estimated_monthly_savings_usd
+        ),
+        "estimated_savings_pct": report.estimated_savings_pct,
+        "requires_human_approval": report.requires_human_approval,
+        "auto_apply": report.auto_apply,
+        "recommendations": [
+            {
+                "namespace": recommendation.namespace,
+                "workload_name": recommendation.workload_name,
+                "workload_type": recommendation.workload_type,
+                "cpu_utilization_pct": (
+                    recommendation.cpu_utilization_pct
+                ),
+                "memory_utilization_pct": (
+                    recommendation.memory_utilization_pct
+                ),
+                "monthly_cost_usd": recommendation.monthly_cost_usd,
+                "estimated_monthly_savings_usd": (
+                    recommendation.estimated_monthly_savings_usd
+                ),
+                "confidence": recommendation.confidence,
+                "recommendation": recommendation.recommendation,
+                "requires_human_approval": (
+                    recommendation.requires_human_approval
+                ),
+                "auto_apply": recommendation.auto_apply,
+            }
+            for recommendation in report.recommendations
+        ],
+    }
 
 
 @app.post("/alerts")
