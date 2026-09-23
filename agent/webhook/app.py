@@ -9,6 +9,7 @@ from agent.sre_agent.candidate_value import suggest_candidate_value
 from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.git_commit_dry_run import build_git_commit_dry_run
 from agent.sre_agent.git_execution_gateway import validate_git_execution
+from agent.sre_agent.git_execution_request import build_git_execution_request
 from agent.sre_agent.github_pr import validate_pr_payload_for_github
 from agent.sre_agent.github_request import build_github_pr_request
 from agent.sre_agent.human_approval import (
@@ -25,7 +26,7 @@ from agent.sre_agent.target_file_resolver import resolve_target_file
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="1.6.0",
+    version="1.7.0",
 )
 
 
@@ -393,6 +394,26 @@ def approve_remediation(request: ApprovalRequest) -> dict:
         gateway=github_pr_gateway,
     )
 
+    git_execution_request = None
+
+    if (
+        git_commit_dry_run is not None
+        and git_execution_gateway is not None
+        and git_execution_gateway.allowed
+        and git_execution_gateway.ready_to_execute
+    ):
+        try:
+            git_execution_request = build_git_execution_request(
+                commit_plan=git_commit_dry_run,
+                execution_gateway=git_execution_gateway,
+                github_request=github_pr_request,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=str(exc),
+            ) from exc
+
     return {
         "approval": {
             "approved": request.approved,
@@ -477,6 +498,28 @@ def approve_remediation(request: ApprovalRequest) -> dict:
                 "performs_write": git_execution_gateway.performs_write,
             }
             if git_execution_gateway is not None
+            else None
+        ),
+
+        "git_execution_request": (
+            {
+                "repository": git_execution_request.repository,
+                "base_branch": git_execution_request.base_branch,
+                "head_branch": git_execution_request.head_branch,
+                "target_file": git_execution_request.target_file,
+                "commit_message": git_execution_request.commit_message,
+                "rendered_yaml": git_execution_request.rendered_yaml,
+                "pr_title": git_execution_request.pr_title,
+                "pr_body": git_execution_request.pr_body,
+                "create_branch": git_execution_request.create_branch,
+                "write_file": git_execution_request.write_file,
+                "create_commit": git_execution_request.create_commit,
+                "push_branch": git_execution_request.push_branch,
+                "create_pr": git_execution_request.create_pr,
+                "authorized": git_execution_request.authorized,
+                "performs_write": git_execution_request.performs_write,
+            }
+            if git_execution_request is not None
             else None
         ),
 
