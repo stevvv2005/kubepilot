@@ -8,6 +8,7 @@ from agent.sre_agent.approved_manifest import render_approved_manifest
 from agent.sre_agent.candidate_value import suggest_candidate_value
 from agent.sre_agent.git_change import build_git_change_proposal
 from agent.sre_agent.git_commit_dry_run import build_git_commit_dry_run
+from agent.sre_agent.git_execution_gateway import validate_git_execution
 from agent.sre_agent.github_pr import validate_pr_payload_for_github
 from agent.sre_agent.github_request import build_github_pr_request
 from agent.sre_agent.human_approval import (
@@ -24,7 +25,7 @@ from agent.sre_agent.target_file_resolver import resolve_target_file
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="1.5.0",
+    version="1.6.0",
 )
 
 
@@ -166,9 +167,7 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "summary": remediation.summary,
             "proposed_change": remediation.proposed_change,
             "target_file": remediation.target_file,
-            "requires_human_approval": (
-                remediation.requires_human_approval
-            ),
+            "requires_human_approval": remediation.requires_human_approval,
             "direct_cluster_write": remediation.direct_cluster_write,
         },
 
@@ -177,9 +176,7 @@ def receive_alerts(payload: AlertmanagerPayload) -> dict:
             "target_file": git_change.target_file,
             "change_type": git_change.change_type,
             "description": git_change.description,
-            "requires_human_approval": (
-                git_change.requires_human_approval
-            ),
+            "requires_human_approval": git_change.requires_human_approval,
             "apply_directly": git_change.apply_directly,
         },
 
@@ -380,6 +377,15 @@ def approve_remediation(request: ApprovalRequest) -> dict:
         payload=pr_payload,
     )
 
+    git_execution_gateway = None
+
+    if git_commit_dry_run is not None:
+        git_execution_gateway = validate_git_execution(
+            commit_plan=git_commit_dry_run,
+            pr_payload=pr_payload,
+            github_gateway=github_pr_gateway,
+        )
+
     github_pr_request = build_github_pr_request(
         repository="stevvv2005/kubepilot",
         base_branch="main",
@@ -458,6 +464,19 @@ def approve_remediation(request: ApprovalRequest) -> dict:
                 "writes_git": git_commit_dry_run.writes_git,
             }
             if git_commit_dry_run is not None
+            else None
+        ),
+
+        "git_execution_gateway": (
+            {
+                "allowed": git_execution_gateway.allowed,
+                "reason": git_execution_gateway.reason,
+                "ready_to_execute": (
+                    git_execution_gateway.ready_to_execute
+                ),
+                "performs_write": git_execution_gateway.performs_write,
+            }
+            if git_execution_gateway is not None
             else None
         ),
 

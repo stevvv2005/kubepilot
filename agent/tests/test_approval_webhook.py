@@ -43,12 +43,12 @@ def test_approve_oom_remediation(mock_analyze_pod):
 
     body = response.json()
 
-    # Human approval
+    # Approval
     assert body["approval"]["approved"] is True
     assert body["approval"]["approved_value"] == "64Mi"
     assert body["approval"]["reviewer"] == "human-reviewer"
 
-    # Target resolution
+    # Target resolver
     assert body["target_file_resolution"]["matched"] is True
     assert body["target_file_resolution"]["target_file"] == (
         "chaos/oomkilled-pod.yaml"
@@ -97,31 +97,38 @@ def test_approve_oom_remediation(mock_analyze_pod):
     assert body["pr_payload"]["writes_git"] is False
     assert body["pr_payload"]["creates_pr"] is False
 
-    # Git commit dry-run
+    # Commit dry-run
     assert body["git_commit_dry_run"] is not None
-
     assert body["git_commit_dry_run"]["target_file"] == (
         "chaos/oomkilled-pod.yaml"
     )
-
     assert body["git_commit_dry_run"]["branch_name"] == (
         "fix/sre-oomkilled"
     )
-
     assert body["git_commit_dry_run"]["commit_message"] == (
         "fix(sre): remediate OOMKilled"
     )
-
     assert "memory: 64Mi" in (
         body["git_commit_dry_run"]["rendered_yaml"]
     )
-
     assert body["git_commit_dry_run"]["ready_to_commit"] is True
     assert body["git_commit_dry_run"]["performs_write"] is False
     assert body["git_commit_dry_run"]["writes_file"] is False
     assert body["git_commit_dry_run"]["writes_git"] is False
 
-    # GitHub safety gateway
+    # Git execution gateway
+    assert body["git_execution_gateway"] is not None
+    assert body["git_execution_gateway"]["allowed"] is True
+    assert (
+        body["git_execution_gateway"]["ready_to_execute"]
+        is True
+    )
+    assert body["git_execution_gateway"]["performs_write"] is False
+    assert "passed all safety checks" in (
+        body["git_execution_gateway"]["reason"]
+    )
+
+    # GitHub gateway
     assert body["github_pr_gateway"]["allowed"] is True
     assert body["github_pr_gateway"]["ready_to_send"] is True
     assert body["github_pr_gateway"]["performs_write"] is False
@@ -133,7 +140,7 @@ def test_approve_oom_remediation(mock_analyze_pod):
 
 
 @patch("agent.webhook.app.analyze_pod")
-def test_rejected_approval_does_not_create_commit_plan(
+def test_rejected_approval_does_not_enable_execution(
     mock_analyze_pod,
 ):
     mock_analyze_pod.return_value = SimpleNamespace(
@@ -173,9 +180,10 @@ def test_rejected_approval_does_not_create_commit_plan(
     assert body["reviewed_patch"]["ready_for_pr"] is False
 
     assert body["approved_manifest"] is None
-
-    # Rejected approval must never prepare a Git commit.
     assert body["git_commit_dry_run"] is None
+
+    # No execution gateway can exist without approved commit plan.
+    assert body["git_execution_gateway"] is None
 
     assert body["pr_payload"]["ready_to_create"] is False
     assert body["pr_payload"]["writes_git"] is False
