@@ -1042,6 +1042,74 @@ def receive_alerts(
         pod_name=pod,
         container_name=container,
     )
+    llm_analysis = None
+    llm_error = None
+
+    llm_query = (
+        f"Kubernetes incident detected: "
+        f"{analysis.diagnosis.incident_type}. "
+        f"Root cause: "
+        f"{analysis.diagnosis.root_cause}. "
+        f"Current recommendation: "
+        f"{analysis.diagnosis.recommendation}. "
+        "Analyze the incident using the available "
+        "runbook context and provide a safe "
+        "GitOps-based recommendation."
+    )
+
+    try:
+        provider_selection = (
+            get_provider_selection()
+        )
+
+        llm_result = run_llm_workflow(
+            provider_selection=provider_selection,
+            query=llm_query,
+            signal_type="sre_incident",
+            namespace=namespace,
+            workload_name=pod,
+            repository_root=".",
+        )
+
+        llm_analysis = {
+            "provider": (
+                llm_result.response.provider
+            ),
+            "model": (
+                llm_result.response.model
+            ),
+            "analysis": (
+                llm_result.response.content
+            ),
+            "rag_context_used": (
+                llm_result
+                .response
+                .rag_context_used
+            ),
+            "sources": list(
+                llm_result.response.sources
+            ),
+            "requires_human_approval": (
+                llm_result
+                .requires_human_approval
+            ),
+            "allows_direct_cluster_write": (
+                llm_result
+                .allows_direct_cluster_write
+            ),
+            "external_request_performed": (
+                llm_result
+                .external_request_performed
+            ),
+            "performs_write": (
+                llm_result.performs_write
+            ),
+        }
+
+    except Exception as exc:
+        llm_error = (
+            f"{type(exc).__name__}: {exc}"
+        )
 
     remediation = build_remediation_proposal(
         analysis.diagnosis,
@@ -1198,6 +1266,17 @@ def receive_alerts(
             "cpu_millicores": (
                 analysis.cpu_millicores
             ),
+        },
+                "llm_analysis": (
+            llm_analysis
+        ),
+
+        "llm_status": {
+            "available": (
+                llm_analysis is not None
+            ),
+            "error": llm_error,
+            "non_blocking": True,
         },
 
         "remediation": {
