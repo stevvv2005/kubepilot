@@ -95,6 +95,12 @@ from agent.sre_agent.reviewed_patch import (
 from agent.sre_agent.target_file_resolver import (
     resolve_target_file,
 )
+from agent.llm.client import (
+    MockLLMClient,
+)
+from agent.llm.workflow import (
+    run_llm_workflow,
+)
 
 
 app = FastAPI(
@@ -142,14 +148,97 @@ class ApprovalRequest(BaseModel):
     approved_value: Optional[str] = None
     reviewer: str
     reason: str
+class LLMAnalysisRequest(BaseModel):
+    query: str
+    signal_type: str
 
+    namespace: Optional[str] = None
+    workload_name: Optional[str] = None
 
 @app.get("/health")
 def health() -> dict:
     return {
         "status": "ok",
     }
+@app.post("/llm/analyze")
+def analyze_with_llm(
+    request: LLMAnalysisRequest,
+) -> dict:
+    """
+    Run the local KubePilot LLM workflow.
 
+    This endpoint currently uses MockLLMClient.
+
+    No external model request is performed.
+    No Kubernetes, Git, or cloud write is performed.
+    """
+
+    client = MockLLMClient()
+
+    try:
+        result = run_llm_workflow(
+            client=client,
+            query=request.query,
+            signal_type=request.signal_type,
+            namespace=request.namespace,
+            workload_name=request.workload_name,
+            repository_root=".",
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "signal_type": result.signal_type,
+        "query": result.query,
+        "namespace": result.namespace,
+        "workload_name": (
+            result.workload_name
+        ),
+
+        "rag": {
+            "used": (
+                result.prompt.rag_context_used
+            ),
+            "empty": (
+                result.rag_context.empty
+            ),
+            "sources": list(
+                result.rag_context.sources
+            ),
+        },
+
+        "llm": {
+            "provider": (
+                result.response.provider
+            ),
+            "model": (
+                result.response.model
+            ),
+            "analysis": (
+                result.response.content
+            ),
+        },
+
+        "safety": {
+            "requires_human_approval": (
+                result.requires_human_approval
+            ),
+            "allows_direct_cluster_write": (
+                result
+                .allows_direct_cluster_write
+            ),
+            "external_request_performed": (
+                result
+                .external_request_performed
+            ),
+            "performs_write": (
+                result.performs_write
+            ),
+        },
+    }
 
 @app.get("/finops/report")
 def get_finops_report(
