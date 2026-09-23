@@ -165,3 +165,98 @@ def test_llm_analyze_rejects_empty_signal_type():
         "signal_type is required"
         in response.json()["detail"]
     )
+def test_llm_analyze_explicit_mock_provider(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "KUBEPILOT_LLM_PROVIDER",
+        "mock",
+    )
+
+    monkeypatch.delenv(
+        "KUBEPILOT_BEDROCK_LIVE_AUTHORIZED",
+        raising=False,
+    )
+
+    response = client.post(
+        "/llm/analyze",
+        json={
+            "query": "Explain OOMKilled memory.",
+            "signal_type": "sre_incident",
+            "namespace": "default",
+            "workload_name": "checkoutservice",
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["llm"]["provider"] == "mock"
+
+    assert (
+        body["safety"]
+        ["external_request_performed"]
+        is False
+    )
+
+    assert (
+        body["safety"]
+        ["performs_write"]
+        is False
+    )
+
+
+def test_llm_analyze_bedrock_without_authorization_is_rejected(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "KUBEPILOT_LLM_PROVIDER",
+        "bedrock",
+    )
+
+    monkeypatch.delenv(
+        "KUBEPILOT_BEDROCK_LIVE_AUTHORIZED",
+        raising=False,
+    )
+
+    response = client.post(
+        "/llm/analyze",
+        json={
+            "query": "Explain OOMKilled memory.",
+            "signal_type": "sre_incident",
+            "namespace": "default",
+            "workload_name": "checkoutservice",
+        },
+    )
+
+    assert response.status_code == 400
+
+    assert (
+        "requires explicit live authorization"
+        in response.json()["detail"]
+    )
+
+
+def test_llm_analyze_unknown_provider_is_rejected(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "KUBEPILOT_LLM_PROVIDER",
+        "invalid-provider",
+    )
+
+    response = client.post(
+        "/llm/analyze",
+        json={
+            "query": "Explain OOMKilled memory.",
+            "signal_type": "sre_incident",
+        },
+    )
+
+    assert response.status_code == 500
+
+    assert (
+        "Unsupported KubePilot LLM provider"
+        in response.json()["detail"]
+    )
