@@ -7,6 +7,7 @@ from agent.sre_agent.analyzer import analyze_pod
 from agent.sre_agent.approved_manifest import render_approved_manifest
 from agent.sre_agent.candidate_value import suggest_candidate_value
 from agent.sre_agent.git_change import build_git_change_proposal
+from agent.sre_agent.git_commit_dry_run import build_git_commit_dry_run
 from agent.sre_agent.github_pr import validate_pr_payload_for_github
 from agent.sre_agent.github_request import build_github_pr_request
 from agent.sre_agent.human_approval import (
@@ -23,7 +24,7 @@ from agent.sre_agent.target_file_resolver import resolve_target_file
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
-    version="1.4.0",
+    version="1.5.0",
 )
 
 
@@ -361,6 +362,20 @@ def approve_remediation(request: ApprovalRequest) -> dict:
         reviewed_patch=reviewed_patch,
     )
 
+    git_commit_dry_run = None
+
+    if approved_manifest is not None:
+        try:
+            git_commit_dry_run = build_git_commit_dry_run(
+                approved_manifest=approved_manifest,
+                pr_payload=pr_payload,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=str(exc),
+            ) from exc
+
     github_pr_gateway = validate_pr_payload_for_github(
         payload=pr_payload,
     )
@@ -425,10 +440,26 @@ def approve_remediation(request: ApprovalRequest) -> dict:
             "branch_name": pr_payload.branch_name,
             "target_file": pr_payload.target_file,
             "approved_value": pr_payload.approved_value,
+            "commit_message": pr_payload.commit_message,
             "ready_to_create": pr_payload.ready_to_create,
             "writes_git": pr_payload.writes_git,
             "creates_pr": pr_payload.creates_pr,
         },
+
+        "git_commit_dry_run": (
+            {
+                "target_file": git_commit_dry_run.target_file,
+                "branch_name": git_commit_dry_run.branch_name,
+                "commit_message": git_commit_dry_run.commit_message,
+                "rendered_yaml": git_commit_dry_run.rendered_yaml,
+                "ready_to_commit": git_commit_dry_run.ready_to_commit,
+                "performs_write": git_commit_dry_run.performs_write,
+                "writes_file": git_commit_dry_run.writes_file,
+                "writes_git": git_commit_dry_run.writes_git,
+            }
+            if git_commit_dry_run is not None
+            else None
+        ),
 
         "github_pr_gateway": {
             "allowed": github_pr_gateway.allowed,
