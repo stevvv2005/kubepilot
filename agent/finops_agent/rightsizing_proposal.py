@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional
-
+import math
 from agent.finops_agent.cost_analysis import (
     FinOpsAnalysis,
     WorkloadCostSnapshot,
@@ -37,18 +37,30 @@ def _round_cpu_request(
     value: float,
 ) -> float:
     """
-    Round CPU request to a practical Kubernetes value.
+    Round CPU request upward to the next 0.01 core.
 
-    Example:
+    A tiny epsilon is removed before applying ceil
+    to avoid floating-point artifacts.
+
+    Examples:
+    0.015 cores -> 0.02 cores
     0.073 cores -> 0.08 cores
+    0.30000000000000004 cores -> 0.30 cores
     """
 
-    return round(
-        max(value, 0.01),
-        2,
+    safe_value = max(
+        value,
+        0.01,
     )
 
+    epsilon = 1e-12
 
+    return (
+        math.ceil(
+            (safe_value - epsilon) * 100
+        )
+        / 100
+    )
 def _round_memory_request(
     value: float,
 ) -> float:
