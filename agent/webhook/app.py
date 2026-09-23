@@ -95,13 +95,13 @@ from agent.sre_agent.reviewed_patch import (
 from agent.sre_agent.target_file_resolver import (
     resolve_target_file,
 )
-from agent.llm.client import (
-    MockLLMClient,
-)
+
 from agent.llm.workflow import (
     run_llm_workflow,
 )
-
+from agent.llm.provider_selector import (
+    get_provider_selection,
+)
 
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
@@ -165,19 +165,27 @@ def analyze_with_llm(
     request: LLMAnalysisRequest,
 ) -> dict:
     """
-    Run the local KubePilot LLM workflow.
+    Run the KubePilot LLM workflow using the
+    configured provider.
 
-    This endpoint currently uses MockLLMClient.
+    Mock is the default provider.
 
-    No external model request is performed.
-    No Kubernetes, Git, or cloud write is performed.
+    Bedrock requires explicit live authorization.
     """
 
-    client = MockLLMClient()
+    try:
+        provider_selection = (
+            get_provider_selection()
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc),
+        ) from exc
 
     try:
         result = run_llm_workflow(
-            client=client,
+            provider_selection=provider_selection,
             query=request.query,
             signal_type=request.signal_type,
             namespace=request.namespace,
@@ -239,7 +247,6 @@ def analyze_with_llm(
             ),
         },
     }
-
 @app.get("/finops/report")
 def get_finops_report(
     namespace: Optional[str] = None,

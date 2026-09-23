@@ -17,7 +17,10 @@ from agent.rag.knowledge_base import (
     KnowledgeBase,
     load_markdown_document,
 )
-
+from agent.llm.provider_selector import (
+    LLMProviderSelection,
+    generate_with_selected_provider,
+)
 
 @dataclass(frozen=True)
 class LLMWorkflowResult:
@@ -81,7 +84,8 @@ def build_default_knowledge_base(
 
 def run_llm_workflow(
     *,
-    client: LLMClient,
+    client: LLMClient | None = None,
+    provider_selection: LLMProviderSelection | None = None,
     query: str,
     signal_type: str,
     namespace: str | None = None,
@@ -130,8 +134,26 @@ def run_llm_workflow(
         workload_name=workload_name,
     )
 
-    response = client.generate(
+    if client is not None and provider_selection is not None:
+         raise ValueError(
+        "Provide either client or provider_selection, "
+        "not both."
+          )
+
+    if client is None and provider_selection is None:
+        raise ValueError(
+        "An LLM client or provider_selection "
+        "is required."
+    )
+
+    if client is not None:
+        response = client.generate(
         prompt
+    )
+    else:
+        response = generate_with_selected_provider(
+        prompt=prompt,
+        selection=provider_selection,
     )
 
     if response.performs_write:
