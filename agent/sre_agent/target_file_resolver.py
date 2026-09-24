@@ -56,6 +56,17 @@ def _is_safe_repo_path(path: str) -> bool:
     return True
 
 
+def is_allowlisted_target_file(path: str) -> bool:
+    """
+    Return whether a repository path came from the trusted SRE allowlist.
+    """
+
+    if not _is_safe_repo_path(path):
+        return False
+
+    return path in _ALLOWED_TARGETS.values()
+
+
 def resolve_target_file(
     namespace: str,
     pod_name: str,

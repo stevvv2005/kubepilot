@@ -71,6 +71,13 @@ from agent.sre_agent.git_executor import (
 from agent.sre_agent.github_pr import (
     validate_pr_payload_for_github,
 )
+from agent.sre_agent.github_execution_gateway import (
+    SRE_FIX_BRANCH_PREFIX,
+    validate_sre_github_execution,
+)
+from agent.sre_agent.github_pr_executor import (
+    execute_sre_github_pr_request,
+)
 from agent.sre_agent.github_request import (
     build_github_pr_request,
 )
@@ -1959,6 +1966,19 @@ def approve_remediation(
     )
 
     git_execution_request = None
+    github_live_gateway = None
+    github_live_result = None
+    github_live_error = None
+
+    github_live_authorized = (
+        os.getenv(
+            "KUBEPILOT_GITHUB_LIVE_AUTHORIZED",
+            "",
+        )
+        .strip()
+        .lower()
+        == "true"
+    )
 
     if (
         git_commit_dry_run is not None
@@ -2000,6 +2020,55 @@ def approve_remediation(
                     dry_run=True,
                 )
             )
+
+            github_live_gateway = (
+                validate_sre_github_execution(
+                    request=git_execution_request,
+                    live_authorized=(
+                        github_live_authorized
+                    ),
+                )
+            )
+
+            if github_live_authorized:
+                if not (
+                    github_live_gateway.allowed
+                    and github_live_gateway
+                    .ready_to_execute
+                ):
+                    raise ValueError(
+                        "SRE GitHub live execution "
+                        "was not allowed: "
+                        f"{github_live_gateway.reason}"
+                    )
+
+                github_token = os.getenv(
+                    "GITHUB_TOKEN",
+                    "",
+                ).strip()
+
+                if not github_token:
+                    raise ValueError(
+                        "GITHUB_TOKEN is required "
+                        "for GitHub live execution."
+                    )
+
+                github_client = GitHubRESTClient(
+                    config=GitHubRESTConfig(
+                        token=github_token,
+                        branch_prefix=(
+                            SRE_FIX_BRANCH_PREFIX
+                        ),
+                    )
+                )
+
+                github_live_result = (
+                    execute_sre_github_pr_request(
+                        request=git_execution_request,
+                        client=github_client,
+                        live_authorized=True,
+                    )
+                )
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,
@@ -2322,6 +2391,69 @@ def approve_remediation(
             is not None
             else None
         ),
+
+        "github_live_execution": {
+            "authorized": (
+                github_live_authorized
+            ),
+            "gateway": (
+                {
+                    "allowed": (
+                        github_live_gateway.allowed
+                    ),
+                    "reason": (
+                        github_live_gateway.reason
+                    ),
+                    "ready_to_execute": (
+                        github_live_gateway
+                        .ready_to_execute
+                    ),
+                    "performs_cluster_write": (
+                        github_live_gateway
+                        .performs_cluster_write
+                    ),
+                }
+                if github_live_gateway
+                is not None
+                else None
+            ),
+            "result": (
+                {
+                    "repository": (
+                        github_live_result.repository
+                    ),
+                    "base_branch": (
+                        github_live_result.base_branch
+                    ),
+                    "head_branch": (
+                        github_live_result.head_branch
+                    ),
+                    "target_file": (
+                        github_live_result.target_file
+                    ),
+                    "commit_sha": (
+                        github_live_result.commit_sha
+                    ),
+                    "pr_number": (
+                        github_live_result.pr_number
+                    ),
+                    "pr_url": (
+                        github_live_result.pr_url
+                    ),
+                    "executed": (
+                        github_live_result.executed
+                    ),
+                    "performs_cluster_write": (
+                        github_live_result
+                        .performs_cluster_write
+                    ),
+                }
+                if github_live_result
+                is not None
+                else None
+            ),
+            "error": github_live_error,
+        },
 
         "github_pr_gateway": {
             "allowed": (
