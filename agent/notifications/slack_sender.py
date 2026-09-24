@@ -152,12 +152,12 @@ def _post_slack_webhook(
     webhook_url: str,
     message: str,
     timeout_seconds: float,
+    blocks: list[dict] | None = None,
 ) -> None:
-    body = json.dumps(
-        {
-            "text": message,
-        }
-    ).encode("utf-8")
+    payload = {"text": message}
+    if blocks is not None:
+        payload["blocks"] = blocks
+    body = json.dumps(payload).encode("utf-8")
 
     request = Request(
         webhook_url,
@@ -211,6 +211,58 @@ def _post_slack_webhook(
         raise RuntimeError(
             "Slack webhook returned an unexpected response."
         )
+
+
+def _build_slack_blocks(
+    payload: SlackNotificationPayload,
+    message: str,
+) -> list[dict] | None:
+    if not payload.remediation_id:
+        return None
+
+    evidence = "\n".join(
+        f"• {item}" for item in payload.evidence
+    ) or "• No additional evidence supplied"
+    candidate = payload.candidate_value or "Manual review required"
+    target = payload.target_manifest or "No trusted target resolved"
+
+    return [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": message},
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*Evidence*\n{evidence}\n\n"
+                    f"*Candidate value:* `{candidate}`\n"
+                    f"*Trusted target:* `{target}`"
+                ),
+            },
+        },
+        {
+            "type": "actions",
+            "block_id": f"kubepilot_remediation_{payload.remediation_id}",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Approve"},
+                    "style": "primary",
+                    "action_id": "kubepilot_approve",
+                    "value": payload.remediation_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Reject"},
+                    "style": "danger",
+                    "action_id": "kubepilot_reject",
+                    "value": payload.remediation_id,
+                },
+            ],
+        },
+    ]
 
 
 def send_slack_notification(
@@ -272,11 +324,21 @@ def send_slack_notification(
         destination=destination,
     )
 
-    _post_slack_webhook(
-        webhook_url=webhook_url,
-        message=message,
-        timeout_seconds=timeout_seconds,
-    )
+    blocks = _build_slack_blocks(payload, message)
+
+    if blocks is None:
+        _post_slack_webhook(
+            webhook_url=webhook_url,
+            message=message,
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        _post_slack_webhook(
+            webhook_url=webhook_url,
+            message=message,
+            timeout_seconds=timeout_seconds,
+            blocks=blocks,
+        )
 
     return SlackSendResult(
         notification_type=(
