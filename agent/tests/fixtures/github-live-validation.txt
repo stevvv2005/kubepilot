@@ -1,0 +1,3 @@
+KubePilot GitHub live execution validation fixture.
+This file exists only for controlled GitHub PR integration tests.
+No Kubernetes resource is affected.
