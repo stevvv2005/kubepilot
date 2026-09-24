@@ -1,7 +1,9 @@
+import json
 import os
 from typing import Dict, List, Optional
+from urllib.parse import parse_qs
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from agent.finops_agent.approved_manifest import (
@@ -43,6 +45,19 @@ from agent.notifications.slack_payload import (
 from agent.notifications.slack_sender import (
     send_slack_notification,
 )
+from agent.notifications.slack_approval_repository import (
+    InMemoryApprovalRepository,
+    InvalidRemediationTransitionError,
+    UnknownRemediationError,
+)
+from agent.notifications.slack_approval_service import (
+    SlackApprovalService,
+)
+from agent.notifications.slack_signature import (
+    SLACK_SIGNING_SECRET_ENV_VAR,
+    SlackSignatureError,
+    verify_slack_signature,
+)
 
 from agent.sre_agent.analyzer import (
     analyze_pod,
@@ -70,6 +85,13 @@ from agent.sre_agent.git_executor import (
 )
 from agent.sre_agent.github_pr import (
     validate_pr_payload_for_github,
+)
+from agent.sre_agent.github_execution_gateway import (
+    SRE_FIX_BRANCH_PREFIX,
+    validate_sre_github_execution,
+)
+from agent.sre_agent.github_pr_executor import (
+    execute_sre_github_pr_request,
 )
 from agent.sre_agent.github_request import (
     build_github_pr_request,
@@ -117,6 +139,28 @@ from agent.finops_agent.github_rest_client import (
 app = FastAPI(
     title="KubePilot SRE Alert Webhook",
     version="1.9.0",
+)
+
+
+def _build_sre_github_client() -> GitHubRESTClient:
+    github_token = os.getenv("GITHUB_TOKEN", "").strip()
+    if not github_token:
+        raise ValueError(
+            "GITHUB_TOKEN is required for GitHub live execution."
+        )
+    return GitHubRESTClient(
+        config=GitHubRESTConfig(
+            token=github_token,
+            branch_prefix=SRE_FIX_BRANCH_PREFIX,
+        )
+    )
+
+
+slack_approval_repository = InMemoryApprovalRepository()
+slack_approval_service = SlackApprovalService(
+    slack_approval_repository,
+    repository_root=".",
+    github_client_factory=_build_sre_github_client,
 )
 
 
@@ -171,6 +215,168 @@ def health() -> dict:
     return {
         "status": "ok",
     }
+
+
+@app.post("/slack/actions")
+async def handle_slack_action(request: Request) -> dict:
+    """Validate and process one signed Slack remediation decision."""
+
+    raw_body = await request.body()
+    signing_secret = os.getenv(
+        SLACK_SIGNING_SECRET_ENV_VAR,
+        "",
+    ).strip()
+    if not signing_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="Slack interactive approvals are not configured.",
+        )
+
+    try:
+        verify_slack_signature(
+            raw_body=raw_body,
+            signature=request.headers.get("X-Slack-Signature"),
+            timestamp=request.headers.get("X-Slack-Request-Timestamp"),
+            signing_secret=signing_secret,
+        )
+    except SlackSignatureError as exc:
+        slack_approval_repository.record_audit(
+            (
+                "replay_blocked"
+                if "Stale" in str(exc)
+                else "invalid_signature_blocked"
+            ),
+            "unresolved",
+        )
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    try:
+        form = parse_qs(
+            raw_body.decode("utf-8"),
+            strict_parsing=True,
+            keep_blank_values=True,
+        )
+        encoded_payloads = form["payload"]
+        if len(encoded_payloads) != 1:
+            raise ValueError("Expected one Slack payload.")
+        slack_payload = json.loads(encoded_payloads[0])
+        if not isinstance(slack_payload, dict):
+            raise ValueError("Slack payload must be an object.")
+        if slack_payload.get("type") != "block_actions":
+            raise ValueError("Unsupported Slack payload type.")
+
+        actions = slack_payload.get("actions")
+        user = slack_payload.get("user")
+        if not isinstance(actions, list) or len(actions) != 1:
+            raise ValueError("Expected one Slack action.")
+        if not isinstance(user, dict):
+            raise ValueError("Slack reviewer identity is required.")
+
+        action_payload = actions[0]
+        if not isinstance(action_payload, dict):
+            raise ValueError("Malformed Slack action.")
+        action_id = action_payload.get("action_id")
+        action = {
+            "kubepilot_approve": "approve",
+            "kubepilot_reject": "reject",
+        }.get(action_id)
+        if action is None:
+            raise ValueError("Unsupported Slack action.")
+
+        remediation_id = action_payload.get("value")
+        reviewer_id = user.get("id")
+        reviewer_name = user.get("username") or user.get("name")
+        if not isinstance(remediation_id, str) or not remediation_id.strip():
+            raise ValueError("Slack action has no remediation_id.")
+        if not isinstance(reviewer_id, str) or not reviewer_id.strip():
+            raise ValueError("Slack reviewer identity is required.")
+        if not isinstance(reviewer_name, str) or not reviewer_name.strip():
+            reviewer_name = reviewer_id
+
+        team = slack_payload.get("team")
+        channel = slack_payload.get("channel")
+        if team is not None and not isinstance(team, dict):
+            raise ValueError("Malformed Slack team metadata.")
+        if channel is not None and not isinstance(channel, dict):
+            raise ValueError("Malformed Slack channel metadata.")
+        audit_metadata = tuple(
+            (key, str(value))
+            for key, value in (
+                ("team_id", (team or {}).get("id")),
+                ("channel_id", (channel or {}).get("id")),
+                ("action_ts", action_payload.get("action_ts")),
+            )
+            if value
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Malformed Slack interactive payload.",
+        ) from exc
+
+    live_authorized = (
+        os.getenv("KUBEPILOT_GITHUB_LIVE_AUTHORIZED", "")
+        .strip()
+        .lower()
+        == "true"
+    )
+    try:
+        result = slack_approval_service.process_action(
+            remediation_id=remediation_id,
+            action=action,
+            reviewer_id=reviewer_id,
+            reviewer_name=reviewer_name,
+            rejection_reason=(
+                "Rejected through verified Slack interaction."
+                if action == "reject"
+                else None
+            ),
+            live_authorized=live_authorized,
+            audit_metadata=audit_metadata,
+        )
+    except UnknownRemediationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidRemediationTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        message = str(exc)
+        status_code = (
+            409 if "trusted server-side candidate" in message else 502
+        )
+        raise HTTPException(status_code=status_code, detail=message) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Controlled GitHub execution failed.",
+        ) from exc
+
+    return {
+        "remediation_id": result.remediation_id,
+        "status": result.status,
+        "approved": result.approved,
+        "approved_value": result.approved_value,
+        "rejection_reason": result.rejection_reason,
+        "reviewer": {
+            "id": result.reviewer_id,
+            "name": result.reviewer_name,
+            "source": result.source,
+        },
+        "idempotent": result.idempotent,
+        "github_execution": {
+            "live_authorized": result.live_authorized,
+            "blocked": result.execution_blocked,
+            "executed": result.executed,
+            "pr_number": result.pr_number,
+            "pr_url": result.pr_url,
+            "auto_merge": result.auto_merge,
+        },
+        "safety": {
+            "performs_cluster_write": result.performs_cluster_write,
+            "auto_merge": result.auto_merge,
+        },
+    }
+
+
 @app.post("/llm/analyze")
 def analyze_with_llm(
     request: LLMAnalysisRequest,
@@ -1404,6 +1610,30 @@ def receive_alerts(
         )
     )
 
+    remediation_record = None
+    if (
+        target_resolution.matched
+        and analysis.diagnosis.incident_type != "Healthy"
+    ):
+        evidence = [analysis.diagnosis.root_cause]
+        if analysis.memory_mib is not None:
+            evidence.append(
+                f"Observed memory: {analysis.memory_mib:.2f} MiB"
+            )
+        if analysis.cpu_millicores is not None:
+            evidence.append(
+                f"Observed CPU: {analysis.cpu_millicores:.2f} millicores"
+            )
+        remediation_record = slack_approval_service.register_remediation(
+            patch_proposal=patch_proposal,
+            candidate_value=candidate_value,
+            namespace=namespace,
+            pod_name=pod,
+            container_name=container,
+            diagnosis=analysis.diagnosis.root_cause,
+            evidence=tuple(evidence),
+        )
+
     slack_payload = build_sre_slack_payload(
         incident_type=(
             analysis.diagnosis.incident_type
@@ -1419,6 +1649,18 @@ def receive_alerts(
         confidence=(
             analysis.diagnosis.confidence
         ),
+        remediation_id=(
+            remediation_record.remediation_id
+            if remediation_record is not None
+            else None
+        ),
+        evidence=(
+            remediation_record.evidence
+            if remediation_record is not None
+            else ()
+        ),
+        candidate_value=candidate_value.candidate_value,
+        target_manifest=target_resolution.target_file,
         requires_human_approval=(
             remediation
             .requires_human_approval
@@ -1431,6 +1673,11 @@ def receive_alerts(
         destination="#kubepilot-alerts",
         dry_run=True,
     )
+    if remediation_record is not None:
+        slack_approval_service.mark_notification_sent(
+            remediation_record.remediation_id,
+            dry_run=slack_result.dry_run,
+        )
 
     return {
         "received": len(payload.alerts),
@@ -1782,6 +2029,16 @@ def receive_alerts(
             "performs_write": (
                 slack_result.performs_write
             ),
+            "remediation_id": (
+                remediation_record.remediation_id
+                if remediation_record is not None
+                else None
+            ),
+            "approval_status": (
+                remediation_record.status.value
+                if remediation_record is not None
+                else None
+            ),
         },
     }
 
@@ -1959,6 +2216,19 @@ def approve_remediation(
     )
 
     git_execution_request = None
+    github_live_gateway = None
+    github_live_result = None
+    github_live_error = None
+
+    github_live_authorized = (
+        os.getenv(
+            "KUBEPILOT_GITHUB_LIVE_AUTHORIZED",
+            "",
+        )
+        .strip()
+        .lower()
+        == "true"
+    )
 
     if (
         git_commit_dry_run is not None
@@ -2000,6 +2270,55 @@ def approve_remediation(
                     dry_run=True,
                 )
             )
+
+            github_live_gateway = (
+                validate_sre_github_execution(
+                    request=git_execution_request,
+                    live_authorized=(
+                        github_live_authorized
+                    ),
+                )
+            )
+
+            if github_live_authorized:
+                if not (
+                    github_live_gateway.allowed
+                    and github_live_gateway
+                    .ready_to_execute
+                ):
+                    raise ValueError(
+                        "SRE GitHub live execution "
+                        "was not allowed: "
+                        f"{github_live_gateway.reason}"
+                    )
+
+                github_token = os.getenv(
+                    "GITHUB_TOKEN",
+                    "",
+                ).strip()
+
+                if not github_token:
+                    raise ValueError(
+                        "GITHUB_TOKEN is required "
+                        "for GitHub live execution."
+                    )
+
+                github_client = GitHubRESTClient(
+                    config=GitHubRESTConfig(
+                        token=github_token,
+                        branch_prefix=(
+                            SRE_FIX_BRANCH_PREFIX
+                        ),
+                    )
+                )
+
+                github_live_result = (
+                    execute_sre_github_pr_request(
+                        request=git_execution_request,
+                        client=github_client,
+                        live_authorized=True,
+                    )
+                )
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,
@@ -2322,6 +2641,69 @@ def approve_remediation(
             is not None
             else None
         ),
+
+        "github_live_execution": {
+            "authorized": (
+                github_live_authorized
+            ),
+            "gateway": (
+                {
+                    "allowed": (
+                        github_live_gateway.allowed
+                    ),
+                    "reason": (
+                        github_live_gateway.reason
+                    ),
+                    "ready_to_execute": (
+                        github_live_gateway
+                        .ready_to_execute
+                    ),
+                    "performs_cluster_write": (
+                        github_live_gateway
+                        .performs_cluster_write
+                    ),
+                }
+                if github_live_gateway
+                is not None
+                else None
+            ),
+            "result": (
+                {
+                    "repository": (
+                        github_live_result.repository
+                    ),
+                    "base_branch": (
+                        github_live_result.base_branch
+                    ),
+                    "head_branch": (
+                        github_live_result.head_branch
+                    ),
+                    "target_file": (
+                        github_live_result.target_file
+                    ),
+                    "commit_sha": (
+                        github_live_result.commit_sha
+                    ),
+                    "pr_number": (
+                        github_live_result.pr_number
+                    ),
+                    "pr_url": (
+                        github_live_result.pr_url
+                    ),
+                    "executed": (
+                        github_live_result.executed
+                    ),
+                    "performs_cluster_write": (
+                        github_live_result
+                        .performs_cluster_write
+                    ),
+                }
+                if github_live_result
+                is not None
+                else None
+            ),
+            "error": github_live_error,
+        },
 
         "github_pr_gateway": {
             "allowed": (

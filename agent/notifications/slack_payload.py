@@ -21,6 +21,11 @@ class SlackNotificationPayload:
     dry_run: bool
 
     performs_write: bool = False
+    remediation_id: Optional[str] = None
+    evidence: tuple[str, ...] = ()
+    proposed_remediation: Optional[str] = None
+    candidate_value: Optional[str] = None
+    target_manifest: Optional[str] = None
 
 
 def build_sre_slack_payload(
@@ -31,6 +36,10 @@ def build_sre_slack_payload(
     root_cause: str,
     recommendation: str,
     confidence: str,
+    remediation_id: Optional[str] = None,
+    evidence: tuple[str, ...] = (),
+    candidate_value: Optional[str] = None,
+    target_manifest: Optional[str] = None,
     requires_human_approval: bool = True,
     dry_run: bool = True,
 ) -> SlackNotificationPayload:
@@ -66,6 +75,11 @@ def build_sre_slack_payload(
         ),
         dry_run=dry_run,
         performs_write=False,
+        remediation_id=remediation_id,
+        evidence=evidence,
+        proposed_remediation=recommendation,
+        candidate_value=candidate_value,
+        target_manifest=target_manifest,
     )
 
 

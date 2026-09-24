@@ -72,6 +72,19 @@ def test_github_rest_client_requires_token():
         )
 
 
+def test_github_rest_client_rejects_unsupported_branch_prefix():
+    with pytest.raises(
+        ValueError,
+        match="branch prefix",
+    ):
+        GitHubRESTClient(
+            config=GitHubRESTConfig(
+                token="test-token",
+                branch_prefix="feature/",
+            )
+        )
+
+
 def test_get_branch_sha():
     opener = FakeOpener(
         [
@@ -157,6 +170,37 @@ def test_create_finops_branch():
         body["sha"]
         == "base-sha-123"
     )
+
+
+def test_create_sre_branch_with_explicit_policy():
+    opener = FakeOpener(
+        [
+            {
+                "ref": "refs/heads/fix/sre-oomkilled",
+            }
+        ]
+    )
+
+    client = GitHubRESTClient(
+        config=GitHubRESTConfig(
+            token="test-token",
+            branch_prefix="fix/sre-",
+        ),
+        opener=opener,
+    )
+
+    client.create_branch(
+        repository="stevvv2005/kubepilot",
+        branch="fix/sre-oomkilled",
+        source_sha="base-sha-123",
+    )
+
+    request, _ = opener.requests[0]
+    body = json.loads(
+        request.data.decode("utf-8")
+    )
+
+    assert body["ref"] == "refs/heads/fix/sre-oomkilled"
 
 
 def test_create_branch_rejects_bad_policy():

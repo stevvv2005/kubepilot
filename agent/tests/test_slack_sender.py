@@ -8,6 +8,8 @@ from agent.notifications.slack_payload import (
     build_sre_slack_payload,
 )
 from agent.notifications.slack_sender import (
+    _build_slack_blocks,
+    _build_slack_message,
     send_slack_notification,
 )
 
@@ -65,6 +67,32 @@ def test_sre_slack_sender_dry_run():
     )
 
     assert result.performs_write is False
+
+
+def test_interactive_message_contains_only_remediation_correlation_id():
+    payload = build_sre_slack_payload(
+        incident_type="OOMKilled",
+        namespace="default",
+        workload_name="kubepilot-oomkilled",
+        root_cause="Container exceeded memory limit.",
+        recommendation="Review memory limit through GitOps.",
+        confidence="high",
+        remediation_id="rem_123",
+        evidence=("terminated_reason=OOMKilled",),
+        candidate_value="64Mi",
+        target_manifest="chaos/oomkilled-pod.yaml",
+    )
+    message = _build_slack_message(payload, "#kubepilot-alerts")
+    blocks = _build_slack_blocks(payload, message)
+
+    assert blocks is not None
+    actions = blocks[-1]["elements"]
+    assert [item["action_id"] for item in actions] == [
+        "kubepilot_approve",
+        "kubepilot_reject",
+    ]
+    assert {item["value"] for item in actions} == {"rem_123"}
+    assert all("url" not in item for item in actions)
 
 
 def test_finops_slack_sender_dry_run():

@@ -4,6 +4,7 @@ from unittest.mock import patch
 import yaml
 from fastapi.testclient import TestClient
 
+import agent.webhook.app as webhook_app
 from agent.webhook.app import app
 
 
@@ -264,6 +265,182 @@ def test_rejected_approval_does_not_create_execution_result(
 
     assert body["github_pr_request"]["ready_to_send"] is False
     assert body["github_pr_request"]["performs_write"] is False
+
+
+@patch("agent.webhook.app.analyze_pod")
+def test_approval_github_live_disabled_by_default(
+    mock_analyze_pod,
+    monkeypatch,
+):
+    monkeypatch.delenv(
+        "KUBEPILOT_GITHUB_LIVE_AUTHORIZED",
+        raising=False,
+    )
+
+    monkeypatch.delenv(
+        "GITHUB_TOKEN",
+        raising=False,
+    )
+
+    mock_analyze_pod.return_value = SimpleNamespace(
+        namespace="default",
+        pod_name="kubepilot-oomkilled",
+        container_name="memory-hog",
+        diagnosis=SimpleNamespace(
+            incident_type="OOMKilled",
+            root_cause="Container exceeded its memory limit.",
+            recommendation="Review memory and propose Git change.",
+            confidence="high",
+        ),
+        memory_mib=None,
+        cpu_millicores=None,
+    )
+
+    def fail_if_called(**kwargs):
+        raise AssertionError(
+            "SRE GitHub live executor must not be called."
+        )
+
+    monkeypatch.setattr(
+        webhook_app,
+        "execute_sre_github_pr_request",
+        fail_if_called,
+    )
+
+    response = client.post(
+        "/approvals",
+        json={
+            "namespace": "default",
+            "pod_name": "kubepilot-oomkilled",
+            "container_name": "memory-hog",
+            "approved": True,
+            "approved_value": "64Mi",
+            "reviewer": "human-reviewer",
+            "reason": "Reviewed and approved.",
+        },
+    )
+
+    assert response.status_code == 200
+
+    live = response.json()["github_live_execution"]
+
+    assert live["authorized"] is False
+    assert live["gateway"]["allowed"] is False
+    assert live["result"] is None
+
+
+@patch("agent.webhook.app.analyze_pod")
+def test_approval_github_live_executes_once(
+    mock_analyze_pod,
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "KUBEPILOT_GITHUB_LIVE_AUTHORIZED",
+        "true",
+    )
+
+    monkeypatch.setenv(
+        "GITHUB_TOKEN",
+        "test-token",
+    )
+
+    mock_analyze_pod.return_value = SimpleNamespace(
+        namespace="default",
+        pod_name="kubepilot-oomkilled",
+        container_name="memory-hog",
+        diagnosis=SimpleNamespace(
+            incident_type="OOMKilled",
+            root_cause="Container exceeded its memory limit.",
+            recommendation="Review memory and propose Git change.",
+            confidence="high",
+        ),
+        memory_mib=None,
+        cpu_millicores=None,
+    )
+
+    class FakeGitHubClient:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(
+        webhook_app,
+        "GitHubRESTClient",
+        FakeGitHubClient,
+    )
+
+    github_configs = []
+
+    monkeypatch.setattr(
+        webhook_app,
+        "GitHubRESTConfig",
+        lambda **kwargs: (
+            github_configs.append(kwargs)
+            or SimpleNamespace(**kwargs)
+        ),
+    )
+
+    calls = {
+        "count": 0,
+    }
+
+    def fake_execute_sre_github_pr_request(
+        **kwargs,
+    ):
+        calls["count"] += 1
+
+        return SimpleNamespace(
+            repository="stevvv2005/kubepilot",
+            base_branch="main",
+            head_branch="fix/sre-oomkilled",
+            target_file="chaos/oomkilled-pod.yaml",
+            commit_sha="abc123",
+            pr_number=79,
+            pr_url=(
+                "https://github.com/"
+                "stevvv2005/kubepilot/pull/79"
+            ),
+            executed=True,
+            performs_cluster_write=False,
+        )
+
+    monkeypatch.setattr(
+        webhook_app,
+        "execute_sre_github_pr_request",
+        fake_execute_sre_github_pr_request,
+    )
+
+    response = client.post(
+        "/approvals",
+        json={
+            "namespace": "default",
+            "pod_name": "kubepilot-oomkilled",
+            "container_name": "memory-hog",
+            "approved": True,
+            "approved_value": "64Mi",
+            "reviewer": "human-reviewer",
+            "reason": "Reviewed and approved.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls["count"] == 1
+    assert github_configs == [
+        {
+            "token": "test-token",
+            "branch_prefix": "fix/sre-",
+        }
+    ]
+
+    live = response.json()["github_live_execution"]
+
+    assert live["authorized"] is True
+    assert live["gateway"]["allowed"] is True
+    assert live["result"]["executed"] is True
+    assert live["result"]["pr_number"] == 79
+    assert (
+        live["result"]["performs_cluster_write"]
+        is False
+    )
 
 
 def test_approval_rejects_unknown_workload():

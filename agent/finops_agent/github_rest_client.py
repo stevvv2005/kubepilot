@@ -12,6 +12,7 @@ class GitHubRESTConfig:
     token: str
     api_url: str = "https://api.github.com"
     timeout_seconds: float = 10.0
+    branch_prefix: str = "fix/finops-"
 
 
 class GitHubRESTClient:
@@ -36,8 +37,18 @@ class GitHubRESTClient:
                 "GitHub token is required."
             )
 
+        if config.branch_prefix not in {
+            "fix/finops-",
+            "fix/sre-",
+        }:
+            raise ValueError(
+                "GitHub branch prefix is outside "
+                "the execution policy."
+            )
+
         self._config = config
         self._token = token
+        self._branch_prefix = config.branch_prefix
         self._opener = opener
 
     def _request(
@@ -170,7 +181,7 @@ class GitHubRESTClient:
         source_sha: str,
     ) -> None:
         if not branch.startswith(
-            "fix/finops-"
+            self._branch_prefix
         ):
             raise ValueError(
                 "GitHub branch is outside "
@@ -245,7 +256,7 @@ class GitHubRESTClient:
         message: str,
     ) -> str:
         if not branch.startswith(
-            "fix/finops-"
+            self._branch_prefix
         ):
             raise ValueError(
                 "GitHub branch is outside "
@@ -330,7 +341,7 @@ class GitHubRESTClient:
         body: str,
     ) -> tuple[int, str]:
         if not head_branch.startswith(
-            "fix/finops-"
+            self._branch_prefix
         ):
             raise ValueError(
                 "GitHub PR head branch is outside "
