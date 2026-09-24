@@ -1,12 +1,99 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
+import agent.webhook.app as webhook_app
+from agent.observability.metrics import kubepilot_metrics
 from agent.webhook.app import app
 
 
 client = TestClient(app)
+
+
+METRIC_NAMES = (
+    "kubepilot_incidents_total",
+    "kubepilot_approvals_total",
+    "kubepilot_rejections_total",
+    "kubepilot_prs_created_total",
+    "kubepilot_github_execution_failures_total",
+    "kubepilot_slack_callbacks_total",
+    "kubepilot_llm_requests_total",
+)
+
+
+def _metric_value(metric_name):
+    return kubepilot_metrics.snapshot()[metric_name]
+
+
+def _oom_analysis():
+    return SimpleNamespace(
+        namespace="default",
+        pod_name="kubepilot-oomkilled",
+        container_name="memory-hog",
+        diagnosis=SimpleNamespace(
+            incident_type="OOMKilled",
+            root_cause="Container exceeded its memory limit.",
+            recommendation="Review memory and propose Git change.",
+            confidence="high",
+        ),
+        memory_mib=None,
+        cpu_millicores=None,
+    )
+
+
+def _approval_payload(*, approved=True):
+    return {
+        "namespace": "default",
+        "pod_name": "kubepilot-oomkilled",
+        "container_name": "memory-hog",
+        "approved": approved,
+        "approved_value": "64Mi" if approved else None,
+        "reviewer": "metrics-test-reviewer",
+        "reason": "Metrics test decision.",
+    }
+
+
+def _github_execution_result(*, executed):
+    return SimpleNamespace(
+        repository="stevvv2005/kubepilot",
+        base_branch="main",
+        head_branch="fix/sre-oomkilled",
+        target_file="chaos/oomkilled-pod.yaml",
+        commit_sha="test-sha" if executed else None,
+        pr_number=101 if executed else None,
+        pr_url=(
+            "https://github.test/pull/101"
+            if executed
+            else None
+        ),
+        executed=executed,
+        performs_cluster_write=False,
+    )
+
+
+def _configure_mock_live_github(monkeypatch, executor):
+    monkeypatch.setenv(
+        "KUBEPILOT_GITHUB_LIVE_AUTHORIZED",
+        "true",
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setattr(
+        webhook_app,
+        "GitHubRESTConfig",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        webhook_app,
+        "GitHubRESTClient",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        webhook_app,
+        "execute_sre_github_pr_request",
+        executor,
+    )
 
 
 def test_health():
@@ -18,6 +105,7 @@ def test_health():
 
 @patch("agent.webhook.app.analyze_pod")
 def test_receive_alert(mock_analyze_pod):
+    incidents_before = _metric_value("kubepilot_incidents_total")
     mock_analyze_pod.return_value = SimpleNamespace(
         namespace="default",
         pod_name="frontend",
@@ -224,6 +312,9 @@ def test_receive_alert(mock_analyze_pod):
         pod_name="frontend",
         container_name="server",
     )
+    assert _metric_value("kubepilot_incidents_total") == (
+        incidents_before + 1
+    )
 
 
 def test_receive_alert_without_alerts():
@@ -325,3 +416,157 @@ def test_llm_failure_does_not_block_alert_pipeline(
         body["llm_status"]["non_blocking"]
         is True
     )
+
+
+def test_metrics_endpoint():
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+
+    body = response.text
+
+    for metric_name in METRIC_NAMES:
+        assert f"# TYPE {metric_name} counter" in body
+        assert f"{metric_name} " in body
+
+
+@pytest.mark.parametrize(
+    ("approved", "incremented_metric", "unchanged_metric"),
+    [
+        (
+            True,
+            "kubepilot_approvals_total",
+            "kubepilot_rejections_total",
+        ),
+        (
+            False,
+            "kubepilot_rejections_total",
+            "kubepilot_approvals_total",
+        ),
+    ],
+)
+def test_approval_decision_counter_increment(
+    monkeypatch,
+    approved,
+    incremented_metric,
+    unchanged_metric,
+):
+    monkeypatch.setenv(
+        "KUBEPILOT_GITHUB_LIVE_AUTHORIZED",
+        "false",
+    )
+    monkeypatch.setattr(
+        webhook_app,
+        "analyze_pod",
+        lambda **kwargs: _oom_analysis(),
+    )
+    before = kubepilot_metrics.snapshot()
+
+    response = client.post(
+        "/approvals",
+        json=_approval_payload(approved=approved),
+    )
+
+    assert response.status_code == 200
+    after = kubepilot_metrics.snapshot()
+    assert after[incremented_metric] == before[incremented_metric] + 1
+    assert after[unchanged_metric] == before[unchanged_metric]
+
+
+def test_slack_callback_counter_increment(monkeypatch):
+    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
+    before = _metric_value("kubepilot_slack_callbacks_total")
+
+    response = client.post("/slack/actions", content=b"")
+
+    assert response.status_code == 503
+    assert _metric_value("kubepilot_slack_callbacks_total") == before + 1
+
+
+def test_llm_request_counter_increment(monkeypatch):
+    monkeypatch.setenv("KUBEPILOT_LLM_PROVIDER", "mock")
+    before = _metric_value("kubepilot_llm_requests_total")
+
+    response = client.post(
+        "/llm/analyze",
+        json={
+            "query": "Explain an OOMKilled incident.",
+            "signal_type": "sre_incident",
+            "namespace": "default",
+            "workload_name": "checkoutservice",
+        },
+    )
+
+    assert response.status_code == 200
+    assert _metric_value("kubepilot_llm_requests_total") == before + 1
+
+
+def test_pr_counter_increments_only_for_executed_live_result(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        webhook_app,
+        "analyze_pod",
+        lambda **kwargs: _oom_analysis(),
+    )
+    results = iter(
+        (
+            _github_execution_result(executed=False),
+            _github_execution_result(executed=True),
+        )
+    )
+    _configure_mock_live_github(
+        monkeypatch,
+        lambda **kwargs: next(results),
+    )
+    before = _metric_value("kubepilot_prs_created_total")
+
+    not_executed = client.post(
+        "/approvals",
+        json=_approval_payload(),
+    )
+
+    assert not_executed.status_code == 200
+    assert _metric_value("kubepilot_prs_created_total") == before
+
+    executed = client.post(
+        "/approvals",
+        json=_approval_payload(),
+    )
+
+    assert executed.status_code == 200
+    assert executed.json()["github_live_execution"]["result"][
+        "executed"
+    ] is True
+    assert _metric_value("kubepilot_prs_created_total") == before + 1
+
+
+def test_github_failure_counter_increments_on_live_failure(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        webhook_app,
+        "analyze_pod",
+        lambda **kwargs: _oom_analysis(),
+    )
+
+    def fail_live_execution(**kwargs):
+        raise ValueError("Simulated GitHub execution failure.")
+
+    _configure_mock_live_github(monkeypatch, fail_live_execution)
+    failures_before = _metric_value(
+        "kubepilot_github_execution_failures_total"
+    )
+    prs_before = _metric_value("kubepilot_prs_created_total")
+
+    response = client.post(
+        "/approvals",
+        json=_approval_payload(),
+    )
+
+    assert response.status_code == 400
+    assert _metric_value(
+        "kubepilot_github_execution_failures_total"
+    ) == failures_before + 1
+    assert _metric_value("kubepilot_prs_created_total") == prs_before

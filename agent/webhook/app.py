@@ -3,9 +3,10 @@ import os
 from typing import Dict, List, Optional
 from urllib.parse import parse_qs
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from agent.observability.metrics import kubepilot_metrics
 from agent.finops_agent.approved_manifest import (
     render_approved_finops_manifest,
 )
@@ -203,6 +204,8 @@ class ApprovalRequest(BaseModel):
     approved_value: Optional[str] = None
     reviewer: str
     reason: str
+
+
 class LLMAnalysisRequest(BaseModel):
     query: str
     signal_type: str
@@ -217,10 +220,17 @@ def health() -> dict:
     }
 
 
+@app.get("/metrics")
+def metrics() -> Response:
+    return Response(
+        content=kubepilot_metrics.render_prometheus(),
+        media_type="text/plain; version=0.0.4",
+    )
+
 @app.post("/slack/actions")
 async def handle_slack_action(request: Request) -> dict:
     """Validate and process one signed Slack remediation decision."""
-
+    kubepilot_metrics.increment("kubepilot_slack_callbacks_total")
     raw_body = await request.body()
     signing_secret = os.getenv(
         SLACK_SIGNING_SECRET_ENV_VAR,
@@ -339,16 +349,37 @@ async def handle_slack_action(request: Request) -> dict:
     except InvalidRemediationTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
+        if live_authorized:
+            kubepilot_metrics.increment(
+                "kubepilot_github_execution_failures_total"
+            )
         message = str(exc)
         status_code = (
             409 if "trusted server-side candidate" in message else 502
         )
         raise HTTPException(status_code=status_code, detail=message) from exc
     except Exception as exc:
+        if live_authorized:
+            kubepilot_metrics.increment(
+                "kubepilot_github_execution_failures_total"
+            )
         raise HTTPException(
             status_code=502,
             detail="Controlled GitHub execution failed.",
         ) from exc
+
+    if not result.idempotent:
+        decision_metric = (
+            "kubepilot_approvals_total"
+            if result.approved
+            else "kubepilot_rejections_total"
+        )
+        kubepilot_metrics.increment(decision_metric)
+
+        if result.executed:
+            kubepilot_metrics.increment(
+                "kubepilot_prs_created_total"
+            )
 
     return {
         "remediation_id": result.remediation_id,
@@ -389,7 +420,7 @@ def analyze_with_llm(
 
     Bedrock requires explicit live authorization.
     """
-
+    kubepilot_metrics.increment("kubepilot_llm_requests_total")
     try:
         provider_selection = (
             get_provider_selection()
@@ -634,6 +665,9 @@ def get_finops_rightsizing(
                 get_provider_selection()
             )
 
+            kubepilot_metrics.increment(
+                "kubepilot_llm_requests_total"
+            )
             llm_result = run_llm_workflow(
                 provider_selection=provider_selection,
                 query=llm_query,
@@ -845,6 +879,13 @@ def approve_finops_change(
             detail=str(exc),
         ) from exc
 
+    decision_metric = (
+        "kubepilot_approvals_total"
+        if request.approved
+        else "kubepilot_rejections_total"
+    )
+    kubepilot_metrics.increment(decision_metric)
+
     approved_manifest = None
     commit_plan = None
     execution_gateway = None
@@ -947,13 +988,24 @@ def approve_finops_change(
                         )
                     )
 
-                    github_live_result = (
-                        execute_github_pr_request(
-                            request=execution_request,
-                            client=github_client,
-                            live_authorized=True,
+                    try:
+                        github_live_result = (
+                            execute_github_pr_request(
+                                request=execution_request,
+                                client=github_client,
+                                live_authorized=True,
+                            )
                         )
-                    )
+                    except Exception:
+                        kubepilot_metrics.increment(
+                            "kubepilot_github_execution_failures_total"
+                        )
+                        raise
+
+                    if github_live_result.executed:
+                        kubepilot_metrics.increment(
+                            "kubepilot_prs_created_total"
+                        )
 
         except ValueError as exc:
             raise HTTPException(
@@ -1413,7 +1465,7 @@ def approve_finops_change(
             ),
             "sent": slack_result.sent,
             "external_request_performed": (
-    slack_result.external_request_performed
+                slack_result.external_request_performed
             ),
             "performs_write": (
                 slack_result.performs_write
@@ -1432,7 +1484,6 @@ def receive_alerts(
 
     Slack remains dry-run only.
     """
-
     if not payload.alerts:
         raise HTTPException(
             status_code=400,
@@ -1441,6 +1492,11 @@ def receive_alerts(
                 "contains no alerts"
             ),
         )
+
+    kubepilot_metrics.increment(
+        "kubepilot_incidents_total",
+        len(payload.alerts),
+    )
 
     first_alert = payload.alerts[0]
 
@@ -1498,6 +1554,9 @@ def receive_alerts(
             get_provider_selection()
         )
 
+        kubepilot_metrics.increment(
+            "kubepilot_llm_requests_total"
+        )
         llm_result = run_llm_workflow(
             provider_selection=provider_selection,
             query=llm_query,
@@ -2051,7 +2110,6 @@ def approve_remediation(
     Apply a human SRE approval decision and
     build the safe Git dry-run flow.
     """
-
     target_resolution = resolve_target_file(
         namespace=request.namespace,
         pod_name=request.pod_name,
@@ -2142,6 +2200,13 @@ def approve_remediation(
             status_code=400,
             detail=str(exc),
         ) from exc
+
+    decision_metric = (
+        "kubepilot_approvals_total"
+        if request.approved
+        else "kubepilot_rejections_total"
+    )
+    kubepilot_metrics.increment(decision_metric)
 
     approved_manifest = None
 
@@ -2312,19 +2377,30 @@ def approve_remediation(
                     )
                 )
 
-                github_live_result = (
-                    execute_sre_github_pr_request(
-                        request=git_execution_request,
-                        client=github_client,
-                        live_authorized=True,
+                try:
+                    github_live_result = (
+                        execute_sre_github_pr_request(
+                            request=git_execution_request,
+                            client=github_client,
+                            live_authorized=True,
+                        )
                     )
-                )
+                except Exception:
+                    kubepilot_metrics.increment(
+                        "kubepilot_github_execution_failures_total"
+                    )
+                    raise
+
+                if github_live_result.executed:
+                    kubepilot_metrics.increment(
+                        "kubepilot_prs_created_total"
+                    )
+
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,
                 detail=str(exc),
             ) from exc
-
     return {
         "approval": {
             "approved": request.approved,
