@@ -1,0 +1,57 @@
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: kubepilot-require-resource-requests
+  labels:
+    app.kubernetes.io/part-of: kubepilot
+  annotations:
+    policies.kyverno.io/title: Require CPU and Memory Requests
+    policies.kyverno.io/category: KubePilot Security, EKS Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.18.0
+    policies.kyverno.io/description: >-
+      Reports Pods whose application or init containers omit CPU or memory
+      requests so scheduling and capacity signals remain explicit.
+spec:
+  validationActions:
+    - Audit
+  evaluation:
+    background:
+      enabled: true
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
+            - kube-public
+            - kube-node-lease
+            - argocd
+            - monitoring
+            - kyverno
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  variables:
+    - name: workloadContainers
+      expression: >-
+        object.spec.containers + object.spec.?initContainers.orValue([])
+  validations:
+    - expression: >-
+        variables.workloadContainers.all(container,
+          has(container.resources) &&
+          has(container.resources.requests) &&
+          has(container.resources.requests.cpu) &&
+          has(container.resources.requests.memory))
+      message: >-
+        CPU and memory requests are required for every application and init
+        container.
