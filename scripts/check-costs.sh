@@ -12,11 +12,16 @@ echo "This script is READ-ONLY."
 echo "It does not create, modify, or delete AWS resources."
 echo
 
-if ! command -v aws >/dev/null 2>&1; then
+if command -v aws >/dev/null 2>&1; then
+  :
+elif command -v aws.exe >/dev/null 2>&1; then
+  aws() {
+    aws.exe "$@"
+  }
+else
   echo "ERROR: AWS CLI is not installed or not available in PATH."
   exit 1
 fi
-
 echo "[1/6] AWS caller identity"
 aws sts get-caller-identity \
   --query '{Arn:Arn,Account:Account}' \
@@ -45,7 +50,8 @@ NODEGROUPS="$(
     --region "${REGION}" \
     --cluster-name "${CLUSTER_NAME}" \
     --query 'nodegroups[]' \
-    --output text 2>/dev/null || true
+    --output text 2>/dev/null |
+  tr -d '\r' || true
 )"
 
 if [[ -z "${NODEGROUPS}" ]]; then
