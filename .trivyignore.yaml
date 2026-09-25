@@ -1,0 +1,24 @@
+misconfigurations:
+  - id: AWS-0040
+    paths:
+      - "terraform-aws-modules/eks/aws/main.tf"
+    statement: "Accepted temporarily for the KubePilot dev/lab EKS cluster. Public API access is required for the current local administration workflow and must be reviewed before production."
+    expired_at: 2026-10-31
+
+  - id: AWS-0041
+    paths:
+      - "terraform-aws-modules/eks/aws/main.tf"
+    statement: "Accepted temporarily for the KubePilot dev/lab cluster. Public EKS access is restricted to an administrator CIDR rather than 0.0.0.0/0. Reassess before production."
+    expired_at: 2026-10-31
+
+  - id: AWS-0104
+    paths:
+      - "terraform-aws-modules/eks/aws/node_groups.tf"
+    statement: "Accepted temporarily for the lab managed node group. Restrictive production egress design is outside the current cost-optimized lab scope."
+    expired_at: 2026-10-31
+
+  - id: AWS-0164
+    paths:
+      - "terraform-aws-modules/vpc/aws/main.tf"
+    statement: "Accepted temporarily because the KubePilot lab intentionally uses public subnets and no NAT Gateway to reduce lab cost. Must be redesigned before production."
+    expired_at: 2026-10-31

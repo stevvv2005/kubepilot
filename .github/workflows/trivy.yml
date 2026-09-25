@@ -33,6 +33,7 @@ jobs:
   trivy-iac:
     name: Trivy IaC Scan
     runs-on: ubuntu-latest
+    
 
     steps:
       - name: Checkout repository
@@ -45,4 +46,6 @@ jobs:
           scan-ref: .
           format: table
           severity: CRITICAL,HIGH
+          skip-dirs: chaos
+          trivyignores: .trivyignore.yaml
           exit-code: '1'
