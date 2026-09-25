@@ -1,0 +1,48 @@
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: kubepilot-disallow-host-path
+  labels:
+    app.kubernetes.io/part-of: kubepilot
+  annotations:
+    policies.kyverno.io/title: Disallow hostPath Volumes
+    policies.kyverno.io/category: KubePilot Security, Pod Security Standards (Baseline)
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod,Volume
+    policies.kyverno.io/minversion: 1.18.0
+    policies.kyverno.io/description: >-
+      Reports Pods that mount node filesystem paths through hostPath volumes.
+spec:
+  validationActions:
+    - Audit
+  evaluation:
+    background:
+      enabled: true
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
+            - kube-public
+            - kube-node-lease
+            - argocd
+            - monitoring
+            - kyverno
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  validations:
+    - expression: >-
+        object.spec.?volumes.orValue([]).all(volume, !has(volume.hostPath))
+      message: >-
+        hostPath volumes are disallowed. The spec.volumes[*].hostPath field
+        must be unset.
